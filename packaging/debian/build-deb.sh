@@ -21,7 +21,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 install -m 0755 "${BINARY}" "${STAGING}/usr/bin/llama-scale"
 install -m 0644 "${SCRIPT_DIR}/llama-scale.service" "${STAGING}/lib/systemd/system/"
-install -m 0644 "${SCRIPT_DIR}/config.yaml" "${STAGING}/etc/llama-scale/config.yaml"
+install -m 0644 "${SCRIPT_DIR}/config.yaml.default" "${STAGING}/etc/llama-scale/config.yaml.default"
 install -m 0755 "${SCRIPT_DIR}/postinst" "${STAGING}/DEBIAN/"
 install -m 0755 "${SCRIPT_DIR}/prerm" "${STAGING}/DEBIAN/"
 

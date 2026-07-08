@@ -5,7 +5,7 @@
 # /etc/default/llama-scale and referenced here as ${VAR_NAME}.
 
 server:
-  listen: "0.0.0.0:8080"
+  listen: "127.0.0.1:11435"
   api_keys:
     - "sk-change-me-after-install"
 

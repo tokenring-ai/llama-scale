@@ -3,6 +3,7 @@ Description=llama-scale OpenAI-compatible LLM router
 Documentation=https://github.com/tokenring-ai/llama-scale
 After=network-online.target
 Wants=network-online.target
+ConditionPathExists=/etc/llama-scale/config.yaml
 
 [Service]
 Type=simple
