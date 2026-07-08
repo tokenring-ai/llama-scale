@@ -1,5 +1,10 @@
 # llama-scale
 
+<img src="assets/logo.webp" alt="TokenRing Logo" style="max-width: 350px; margin: 0 auto; background: white">
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/language-Rust-orange.svg?logo=rust)](https://www.rust-lang.org/)
+
 A simple, Rust-based **OpenAI-compatible LLM router**. It presents a single
 OpenAI-style endpoint to your clients and forwards each request to one of several
 configured backends, choosing the backend with:
