@@ -1,6 +1,6 @@
 {
   "name": "llama-scale",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "OpenAI-compatible LLM router with session affinity and least-connections load balancing",
   "license": "MIT",
   "repository": {
@@ -15,6 +15,7 @@
     "llama-scale": "bin/llama-scale.js"
   },
   "files": [
+    "README.md",
     "bin",
     "vendor"
   ],

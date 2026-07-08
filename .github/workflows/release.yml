@@ -21,7 +21,9 @@ on:
       - 'v*'
   workflow_dispatch:
 
+
 permissions:
+  id-token: write  # Required for OIDC
   contents: write   # create GitHub Releases + upload assets
   packages: write   # push images to ghcr.io
 
@@ -203,6 +205,10 @@ jobs:
 
   publish-npm:
     name: Publish NPM package
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
     needs: build-binaries
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
@@ -235,7 +241,7 @@ jobs:
             [aarch64-apple-darwin]=llama-scale-aarch64-apple-darwin
           )
 
-          mkdir -p npm/vendor
+          mkdir -p packaging/npm/vendor
           for target in "${!TARGETS[@]}"; do
             tarfile="$(find "artifacts/llama-scale-${target}" -name '*.tar.gz' -print -quit)"
             if [[ -z "${tarfile}" ]]; then
@@ -244,7 +250,7 @@ jobs:
             fi
             tmpdir="$(mktemp -d)"
             tar -xzf "${tarfile}" -C "${tmpdir}"
-            install -m 0755 "${tmpdir}/llama-scale" "npm/vendor/${TARGETS[$target]}"
+            install -m 0755 "${tmpdir}/llama-scale" "packaging/npm/vendor/${TARGETS[$target]}"
             rm -rf "${tmpdir}"
           done
 
@@ -255,10 +261,10 @@ jobs:
 
           node -e "
             const fs = require('fs');
-            const pkg = JSON.parse(fs.readFileSync('npm/package.json', 'utf8'));
+            const pkg = JSON.parse(fs.readFileSync('packaging/npm/package.json', 'utf8'));
             pkg.version = process.env.VERSION;
-            fs.writeFileSync('npm/package.json', JSON.stringify(pkg, null, 2) + '\n');
+            fs.writeFileSync('packaging/npm/package.json', JSON.stringify(pkg, null, 2) + '\n');
           "
 
-          cd npm
-          npm publish --access public
+          cd packaging/npm
+          npm stage publish --provenance --access public
