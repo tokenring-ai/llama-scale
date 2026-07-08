@@ -1,13 +1,19 @@
 name: Build & Release
 
 # Builds release binaries for Linux/macOS on Intel (x86_64) and Arm (aarch64),
-# plus multi-arch Docker images (linux/amd64, linux/arm64) pushed to GHCR.
+# Debian/Ubuntu .deb packages (amd64 + arm64), an npm package with all four
+# platform binaries, plus multi-arch Docker images (linux/amd64, linux/arm64)
+# pushed to GHCR.
 #
 # Triggers:
-#   - push of a v* tag   -> builds everything, publishes a GitHub Release and
-#                           pushes :<tag> + :latest Docker images.
+#   - push of a v* tag   -> builds everything, publishes a GitHub Release
+#                           (tarballs + .deb), publishes to npm, and pushes
+#                           :<tag> + :latest Docker images.
 #   - workflow_dispatch  -> builds everything, pushes a :sha-<short> Docker image
-#                           (no release). Handy for testing images from a branch.
+#                           (no release/npm publish). Handy for testing from a branch.
+#
+# Secrets:
+#   NPM_TOKEN  - npm automation token for publishing the llama-scale package
 
 on:
   push:
@@ -45,7 +51,7 @@ jobs:
             strip_cmd: aarch64-linux-gnu-strip
           # macOS Intel
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-15-intel
             apt: ""
             linker: ""
             strip_cmd: strip -x
@@ -91,8 +97,10 @@ jobs:
         run: |
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             VERSION="${GITHUB_REF_NAME}"
+            DEB_VERSION="${GITHUB_REF_NAME#v}"
           else
             VERSION="dev-${GITHUB_SHA::7}"
+            DEB_VERSION="0.0.0-dev.${GITHUB_SHA::7}"
           fi
           # tag/branch names may contain '/' -> make them filename-safe
           VERSION="${VERSION//\//-}"
@@ -103,10 +111,31 @@ jobs:
           tar czf "${STAGE}.tar.gz" -C "$STAGE" .
           echo "ASSET=${STAGE}.tar.gz" >> "$GITHUB_ENV"
 
+          if [[ "${{ matrix.target }}" == *-linux-gnu ]]; then
+            case "${{ matrix.target }}" in
+              x86_64-unknown-linux-gnu) DEB_ARCH=amd64 ;;
+              aarch64-unknown-linux-gnu) DEB_ARCH=arm64 ;;
+            esac
+            DEB_FILE="llama-scale_${DEB_VERSION}_${DEB_ARCH}.deb"
+            packaging/debian/build-deb.sh \
+              "${DEB_VERSION}" "${DEB_ARCH}" \
+              "target/${{ matrix.target }}/release/llama-scale" \
+              "${DEB_FILE}"
+            echo "DEB_ASSET=${DEB_FILE}" >> "$GITHUB_ENV"
+          fi
+
       - uses: actions/upload-artifact@v4
         with:
           name: llama-scale-${{ matrix.target }}
           path: ${{ env.ASSET }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ contains(matrix.target, 'linux-gnu') }}
+        with:
+          name: llama-scale-deb-${{ matrix.target }}
+          path: ${{ env.DEB_ASSET }}
           if-no-files-found: error
           retention-days: 14
 
@@ -167,5 +196,62 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          files: assets/**/*.tar.gz
+          files: |
+            assets/**/*.tar.gz
+            assets/**/*.deb
           generate_release_notes: true
+
+  publish-npm:
+    name: Publish NPM package
+    needs: build-binaries
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all binary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: https://registry.npmjs.org
+
+      - name: Assemble and publish npm package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+
+          declare -A TARGETS=(
+            [x86_64-unknown-linux-gnu]=llama-scale-x86_64-unknown-linux-gnu
+            [aarch64-unknown-linux-gnu]=llama-scale-aarch64-unknown-linux-gnu
+            [x86_64-apple-darwin]=llama-scale-x86_64-apple-darwin
+            [aarch64-apple-darwin]=llama-scale-aarch64-apple-darwin
+          )
+
+          mkdir -p npm/vendor
+          for target in "${!TARGETS[@]}"; do
+            tarfile="$(find "artifacts/llama-scale-${target}" -name '*.tar.gz' -print -quit)"
+            if [[ -z "${tarfile}" ]]; then
+              echo "missing tarball artifact for ${target}" >&2
+              exit 1
+            fi
+            tmpdir="$(mktemp -d)"
+            tar -xzf "${tarfile}" -C "${tmpdir}"
+            install -m 0755 "${tmpdir}/llama-scale" "npm/vendor/${TARGETS[$target]}"
+            rm -rf "${tmpdir}"
+          done
+
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('npm/package.json', 'utf8'));
+            pkg.version = process.env.VERSION;
+            fs.writeFileSync('npm/package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+
+          cd npm
+          npm publish --access public

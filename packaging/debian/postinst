@@ -1,0 +1,22 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+  configure)
+    if ! getent passwd llama-scale >/dev/null 2>&1; then
+      adduser --system --group --no-create-home --home /nonexistent \
+        --shell /usr/sbin/nologin llama-scale
+    fi
+
+    install -d -o llama-scale -g llama-scale -m 0750 /var/log/llama-scale
+
+    deb-systemd-helper update-state llama-scale.service >/dev/null 2>&1 || true
+    deb-systemd-helper enable llama-scale.service >/dev/null 2>&1 || true
+
+    if [ -n "$2" ]; then
+      deb-systemd-helper --restart llama-scale.service >/dev/null 2>&1 || true
+    fi
+    ;;
+esac
+
+exit 0

@@ -1,0 +1,27 @@
+# llama-scale configuration — installed by the Debian package.
+# Edit this file, then run: sudo systemctl restart llama-scale
+#
+# Optional environment variables (e.g. API keys) can be set in
+# /etc/default/llama-scale and referenced here as ${VAR_NAME}.
+
+server:
+  listen: "0.0.0.0:8080"
+  api_keys:
+    - "sk-change-me-after-install"
+
+log:
+  destination: "file"
+  file: "/var/log/llama-scale/app.log"
+  level: "info"
+
+models_refresh_interval_secs: 30
+health_check_interval_secs: 15
+health_check_timeout_secs: 5
+session_ttl_secs: 3600
+session_max_entries: 100000
+
+backends:
+  - name: ollama
+    url: "http://127.0.0.1:11434/v1"
+    api_key: "ollama"
+    health_path: "/health"

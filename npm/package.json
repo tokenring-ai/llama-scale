@@ -1,0 +1,24 @@
+{
+  "name": "llama-scale",
+  "version": "0.0.0-dev",
+  "description": "OpenAI-compatible LLM router with session affinity and least-connections load balancing",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tokenring-ai/llama-scale.git"
+  },
+  "homepage": "https://github.com/tokenring-ai/llama-scale#readme",
+  "bugs": {
+    "url": "https://github.com/tokenring-ai/llama-scale/issues"
+  },
+  "bin": {
+    "llama-scale": "bin/llama-scale.js"
+  },
+  "files": [
+    "bin",
+    "vendor"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}
