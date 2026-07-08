@@ -222,9 +222,11 @@ jobs:
       - name: Assemble and publish npm package
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${VERSION#v}"
+          export VERSION
 
           declare -A TARGETS=(
             [x86_64-unknown-linux-gnu]=llama-scale-x86_64-unknown-linux-gnu
@@ -245,6 +247,11 @@ jobs:
             install -m 0755 "${tmpdir}/llama-scale" "npm/vendor/${TARGETS[$target]}"
             rm -rf "${tmpdir}"
           done
+
+          if [[ -z "${VERSION}" ]]; then
+            echo "VERSION is empty; expected a v* tag ref, got: ${GITHUB_REF}" >&2
+            exit 1
+          fi
 
           node -e "
             const fs = require('fs');
