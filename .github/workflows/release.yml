@@ -65,7 +65,7 @@ jobs:
             linker: ""
             strip_cmd: strip -x
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -127,14 +127,14 @@ jobs:
             echo "DEB_ASSET=${DEB_FILE}" >> "$GITHUB_ENV"
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: llama-scale-${{ matrix.target }}
           path: ${{ env.ASSET }}
           if-no-files-found: error
           retention-days: 14
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: ${{ contains(matrix.target, 'linux-gnu') }}
         with:
           name: llama-scale-deb-${{ matrix.target }}
@@ -147,7 +147,7 @@ jobs:
     needs: build-binaries
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # QEMU is needed for the lightweight runtime stage (apt-get) when building
       # for arm64. The Rust compile itself is cross-compiled natively in the
@@ -192,7 +192,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download all binary artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: assets
 
@@ -215,7 +215,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download all binary artifacts
         uses: actions/download-artifact@v4
