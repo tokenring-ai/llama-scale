@@ -32,6 +32,7 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
+
   build-binaries:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
@@ -205,6 +206,7 @@ jobs:
 
   publish-npm:
     name: Publish NPM package
+
     permissions:
       contents: read
       id-token: write
@@ -220,9 +222,10 @@ jobs:
         with:
           path: artifacts
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node.js for npm publishing
+        uses: actions/setup-node@v6
         with:
-          node-version: '22'
+          node-version: '26'
           registry-url: https://registry.npmjs.org
 
       - name: Assemble and publish npm package
