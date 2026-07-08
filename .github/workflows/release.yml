@@ -152,12 +152,12 @@ jobs:
       # QEMU is needed for the lightweight runtime stage (apt-get) when building
       # for arm64. The Rust compile itself is cross-compiled natively in the
       # builder stage (see Dockerfile), so emulation cost is negligible.
-      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-qemu-action@v4
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Login to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -165,7 +165,7 @@ jobs:
 
       - name: Image metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ github.repository }}
           tags: |
@@ -174,7 +174,7 @@ jobs:
             type=sha,format=short,prefix=sha-
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile
@@ -197,7 +197,7 @@ jobs:
           path: assets
 
       - name: Create release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             assets/**/*.tar.gz
@@ -218,7 +218,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Download all binary artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: artifacts
 
