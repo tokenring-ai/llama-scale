@@ -25,7 +25,7 @@ install -m 0644 "${SCRIPT_DIR}/config.yaml.default" "${STAGING}/etc/llama-scale/
 install -m 0755 "${SCRIPT_DIR}/postinst" "${STAGING}/DEBIAN/"
 install -m 0755 "${SCRIPT_DIR}/prerm" "${STAGING}/DEBIAN/"
 
-echo "/etc/llama-scale/config.yaml" > "${STAGING}/DEBIAN/conffiles"
+echo "/etc/llama-scale/config.yaml.default" > "${STAGING}/DEBIAN/conffiles"
 
 cat > "${STAGING}/DEBIAN/control" <<EOF
 Package: llama-scale

@@ -1,13 +1,13 @@
 name: Build & Release
 
-# Builds release binaries for Linux/macOS on Intel (x86_64) and Arm (aarch64),
-# Debian/Ubuntu .deb packages (amd64 + arm64), an npm package with all four
-# platform binaries, plus multi-arch Docker images (linux/amd64, linux/arm64)
-# pushed to GHCR.
+# Builds release binaries for Linux/macOS/Windows on Intel (x86_64) and Arm
+# (aarch64), Debian/Ubuntu .deb packages (amd64 + arm64), RPM packages
+# (x86_64 + aarch64), an npm package with all six platform binaries, plus
+# multi-arch Docker images (linux/amd64, linux/arm64) pushed to GHCR.
 #
 # Triggers:
 #   - push of a v* tag   -> builds everything, publishes a GitHub Release
-#                           (tarballs + .deb), publishes to npm, and pushes
+#                           (tarballs + .deb + .rpm), publishes to npm, and pushes
 #                           :<tag> + :latest Docker images.
 #   - workflow_dispatch  -> builds everything, pushes a :sha-<short> Docker image
 #                           (no release/npm publish). Handy for testing from a branch.
@@ -46,24 +46,42 @@ jobs:
             apt: ""
             linker: ""
             strip_cmd: strip
+            binary: llama-scale
           # Linux Arm
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             apt: "gcc-aarch64-linux-gnu libc6-dev-arm64-cross"
             linker: "aarch64-linux-gnu-gcc"
             strip_cmd: aarch64-linux-gnu-strip
+            binary: llama-scale
           # macOS Intel
           - target: x86_64-apple-darwin
             os: macos-15-intel
             apt: ""
             linker: ""
             strip_cmd: strip -x
+            binary: llama-scale
           # macOS Apple Silicon (Arm)
           - target: aarch64-apple-darwin
             os: macos-14
             apt: ""
             linker: ""
             strip_cmd: strip -x
+            binary: llama-scale
+          # Windows Intel
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            apt: ""
+            linker: ""
+            strip_cmd: ""
+            binary: llama-scale.exe
+          # Windows Arm
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
+            apt: ""
+            linker: ""
+            strip_cmd: ""
+            binary: llama-scale.exe
     steps:
       - uses: actions/checkout@v7
 
@@ -94,37 +112,54 @@ jobs:
         run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Strip binary
-        run: ${{ matrix.strip_cmd }} target/${{ matrix.target }}/release/llama-scale
+        if: ${{ matrix.strip_cmd != '' }}
+        run: ${{ matrix.strip_cmd }} target/${{ matrix.target }}/release/${{ matrix.binary }}
 
       - name: Package
+        shell: bash
         run: |
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             VERSION="${GITHUB_REF_NAME}"
             DEB_VERSION="${GITHUB_REF_NAME#v}"
           else
             VERSION="dev-${GITHUB_SHA::7}"
-            DEB_VERSION="0.0.0-dev.${GITHUB_SHA::7}"
+            DEB_VERSION="0.0.0.dev.${GITHUB_SHA::7}"
           fi
           # tag/branch names may contain '/' -> make them filename-safe
           VERSION="${VERSION//\//-}"
           STAGE="llama-scale-${VERSION}-${{ matrix.target }}"
           mkdir -p "$STAGE"
-          cp "target/${{ matrix.target }}/release/llama-scale" "$STAGE/"
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "$STAGE/"
           cp config.example.yaml README.md "$STAGE/"
           tar czf "${STAGE}.tar.gz" -C "$STAGE" .
           echo "ASSET=${STAGE}.tar.gz" >> "$GITHUB_ENV"
 
           if [[ "${{ matrix.target }}" == *-linux-gnu ]]; then
             case "${{ matrix.target }}" in
-              x86_64-unknown-linux-gnu) DEB_ARCH=amd64 ;;
-              aarch64-unknown-linux-gnu) DEB_ARCH=arm64 ;;
+              x86_64-unknown-linux-gnu)
+                DEB_ARCH=amd64
+                RPM_ARCH=x86_64
+                ;;
+              aarch64-unknown-linux-gnu)
+                DEB_ARCH=arm64
+                RPM_ARCH=aarch64
+                ;;
             esac
             DEB_FILE="llama-scale_${DEB_VERSION}_${DEB_ARCH}.deb"
             packaging/debian/build-deb.sh \
               "${DEB_VERSION}" "${DEB_ARCH}" \
-              "target/${{ matrix.target }}/release/llama-scale" \
+              "target/${{ matrix.target }}/release/${{ matrix.binary }}" \
               "${DEB_FILE}"
             echo "DEB_ASSET=${DEB_FILE}" >> "$GITHUB_ENV"
+
+            sudo apt-get update
+            sudo apt-get install -y rpm
+            RPM_FILE="llama-scale_${DEB_VERSION}_${RPM_ARCH}.rpm"
+            packaging/rpm/build-rpm.sh \
+              "${DEB_VERSION}" "${RPM_ARCH}" \
+              "target/${{ matrix.target }}/release/${{ matrix.binary }}" \
+              "${RPM_FILE}"
+            echo "RPM_ASSET=${RPM_FILE}" >> "$GITHUB_ENV"
           fi
 
       - uses: actions/upload-artifact@v7
@@ -139,6 +174,14 @@ jobs:
         with:
           name: llama-scale-deb-${{ matrix.target }}
           path: ${{ env.DEB_ASSET }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v7
+        if: ${{ contains(matrix.target, 'linux-gnu') }}
+        with:
+          name: llama-scale-rpm-${{ matrix.target }}
+          path: ${{ env.RPM_ASSET }}
           if-no-files-found: error
           retention-days: 14
 
@@ -202,6 +245,7 @@ jobs:
           files: |
             assets/**/*.tar.gz
             assets/**/*.deb
+            assets/**/*.rpm
           generate_release_notes: true
 
   publish-npm:
@@ -242,6 +286,8 @@ jobs:
             [aarch64-unknown-linux-gnu]=llama-scale-aarch64-unknown-linux-gnu
             [x86_64-apple-darwin]=llama-scale-x86_64-apple-darwin
             [aarch64-apple-darwin]=llama-scale-aarch64-apple-darwin
+            [x86_64-pc-windows-msvc]=llama-scale-x86_64-pc-windows-msvc.exe
+            [aarch64-pc-windows-msvc]=llama-scale-aarch64-pc-windows-msvc.exe
           )
 
           mkdir -p packaging/npm/vendor
@@ -253,7 +299,11 @@ jobs:
             fi
             tmpdir="$(mktemp -d)"
             tar -xzf "${tarfile}" -C "${tmpdir}"
-            install -m 0755 "${tmpdir}/llama-scale" "packaging/npm/vendor/${TARGETS[$target]}"
+            case "${target}" in
+              *-pc-windows-msvc) bin_name="llama-scale.exe" ;;
+              *) bin_name="llama-scale" ;;
+            esac
+            install -m 0755 "${tmpdir}/${bin_name}" "packaging/npm/vendor/${TARGETS[$target]}"
             rm -rf "${tmpdir}"
           done
 

@@ -10,6 +10,8 @@ const TARGETS = {
   'linux-arm64': 'aarch64-unknown-linux-gnu',
   'darwin-x64': 'x86_64-apple-darwin',
   'darwin-arm64': 'aarch64-apple-darwin',
+  'win32-x64': 'x86_64-pc-windows-msvc',
+  'win32-arm64': 'aarch64-pc-windows-msvc',
 };
 
 function resolveBinary() {
@@ -17,10 +19,11 @@ function resolveBinary() {
   const rustTarget = TARGETS[key];
   if (!rustTarget) {
     console.error(`llama-scale: unsupported platform ${key}`);
-    console.error('Supported: linux-x64, linux-arm64, darwin-x64, darwin-arm64');
+    console.error('Supported: linux-x64, linux-arm64, darwin-x64, darwin-arm64, win32-x64, win32-arm64');
     process.exit(1);
   }
-  return path.join(__dirname, '..', 'vendor', `llama-scale-${rustTarget}`);
+  const suffix = os.platform() === 'win32' ? '.exe' : '';
+  return path.join(__dirname, '..', 'vendor', `llama-scale-${rustTarget}${suffix}`);
 }
 
 const binary = resolveBinary();
