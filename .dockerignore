@@ -1,0 +1,11 @@
+# Build artifacts
+/target
+**/*.tar.gz
+
+# VCS / IDE / CI
+/.git
+/.github
+/.idea
+
+# Local config (secrets may live here)
+config.yaml

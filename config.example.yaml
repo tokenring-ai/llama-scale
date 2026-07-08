@@ -1,0 +1,57 @@
+# llama-scale configuration
+#
+# Run with:  llama-scale --config config.yaml
+# Set secrets via environment variables and reference them as ${VAR}.
+
+server:
+  # Address to listen on.
+  listen: "0.0.0.0:8080"
+  # OpenAI-style bearer keys accepted from clients. Leave empty to DISABLE
+  # authentication (open access) for local development.
+  api_keys:
+    - "sk-router-dev-key-change-me"
+
+# Logging (applies to app logs AND HTTP request/access logs).
+#   destination: "console" (stderr, default) or "file"
+#   file:        path appended to when destination = file
+#   level:       fallback level when RUST_LOG is unset (e.g. "info", "debug")
+log:
+  destination: "console"
+  # file: "/var/log/llama-scale/access.log"
+  # level: "info"
+
+# How often (seconds) the merged /models list is rebuilt from all backends.
+models_refresh_interval_secs: 30
+# How often (seconds) each backend is probed for health.
+health_check_interval_secs: 15
+# Timeout (seconds) for a single health/model probe.
+health_check_timeout_secs: 5
+# Time-to-live (seconds) for session->backend affinity bindings.
+session_ttl_secs: 3600
+# Maximum number of session bindings kept in memory.
+session_max_entries: 100000
+
+# NOTE on `health_path`: it is host-root absolute — it replaces the path of the
+# backend `url`. The default is `/v1/models` (works for any OpenAI-compatible
+# server). For Ollama set it to the root `/health` endpoint.
+
+backends:
+  # --- Example 1: aliases ---
+  # Only the alias names below are exposed and routable. Requests for the alias
+  # are rewritten to the upstream "real" name before forwarding.
+  - name: openai
+    url: "https://api.openai.com/v1"
+    api_key: "${OPENAI_API_KEY}"
+    timeout_secs: 120
+    # health_path omitted -> defaults to /v1/models
+    model_aliases:
+      - { alias: "gpt-4o", real: "gpt-4o-2024-08-06" }
+      - { alias: "gpt-4",  real: "gpt-4-turbo" }
+
+  # --- Example 2: no aliases (serve everything as-is) ---
+  # With no model_aliases, every model reported by the upstream /models is
+  # exposed and routable under its original id.
+  - name: ollama
+    url: "http://localhost:11434/v1"
+    api_key: "ollama"
+    health_path: "/health"
