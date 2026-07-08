@@ -52,18 +52,20 @@ pub fn healthy_candidates(state: &AppState, model: &str) -> Vec<usize> {
 
 /// Ordered candidate list for a request:
 /// 1. The session-affinity backend (if any healthy candidate) first.
-/// 2. Remaining candidates ordered by ascending in-flight connection count.
+/// 2. Remaining candidates ordered by ascending `fallback` tier, then by
+///    ascending in-flight connection count within each tier.
 ///
-/// The first element is therefore the preferred destination. New (unbound)
-/// sessions try the least-loaded backend first, satisfying the
-/// least-connections policy.
+/// New (unpinned) sessions therefore prefer the lowest `fallback` value among
+/// healthy backends, using least-connections as a tiebreaker. Higher fallback
+/// tiers are only attempted when every backend at a lower tier is unavailable
+/// or fails during the request.
 pub fn ordered_candidates(state: &AppState, model: &str, session_id: &str) -> Vec<usize> {
     let mut cands = healthy_candidates(state, model);
     if cands.is_empty() {
         return Vec::new();
     }
-    // stable least-connections ordering
-    cands.sort_by_key(|&i| state.backends[i].active_count());
+
+    sort_by_fallback_and_connections(state, &mut cands);
 
     if let Some(idx) = state.session_cache.get(session_id) {
         if let Some(pos) = cands.iter().position(|&x| x == idx) {
@@ -72,6 +74,17 @@ pub fn ordered_candidates(state: &AppState, model: &str, session_id: &str) -> Ve
         }
     }
     cands
+}
+
+fn sort_by_fallback_and_connections(state: &AppState, cands: &mut [usize]) {
+    cands.sort_by(|&a, &b| {
+        let ba = &state.backends[a];
+        let bb = &state.backends[b];
+        ba.cfg
+            .fallback
+            .cmp(&bb.cfg.fallback)
+            .then_with(|| ba.active_count().cmp(&bb.active_count()))
+    });
 }
 
 /// Look up the effective request model name, returning `MissingModel` if absent.
@@ -117,6 +130,7 @@ mod tests {
             api_key: "k".into(),
             timeout_secs: 120,
             health_path: "/models".into(),
+            fallback: 0,
             model_aliases: aliases
                 .iter()
                 .map(|(a, r)| ModelAlias {
@@ -129,12 +143,21 @@ mod tests {
     }
 
     fn backend_with_models(name: &str, models: &[&str]) -> Arc<Backend> {
+        backend_with_models_and_fallback(name, models, 0)
+    }
+
+    fn backend_with_models_and_fallback(
+        name: &str,
+        models: &[&str],
+        fallback: u32,
+    ) -> Arc<Backend> {
         let cfg = BackendConfig {
             name: name.into(),
             url: "https://example.com/v1".into(),
             api_key: "k".into(),
             timeout_secs: 120,
             health_path: "/models".into(),
+            fallback,
             model_aliases: vec![],
         };
         let backend = Backend::from_cfg(cfg).unwrap();
@@ -224,5 +247,51 @@ mod tests {
 
         let order = ordered_candidates(&st, "m1", sid);
         assert_eq!(order.first().copied(), Some(1));
+    }
+
+    #[test]
+    fn unpinned_requests_prefer_lowest_fallback_tier() {
+        let primary = backend_with_models_and_fallback("primary", &["m1"], 0);
+        let backup = backend_with_models_and_fallback("backup", &["m1"], 1);
+        backup.active.fetch_add(5, Ordering::Relaxed); // busier, but higher fallback
+        let st = make_state(vec![primary, backup]);
+
+        let order = ordered_candidates(&st, "m1", "new-session");
+        assert_eq!(order, vec![0, 1]);
+    }
+
+    #[test]
+    fn unpinned_requests_use_least_connections_within_fallback_tier() {
+        let b0 = backend_with_models_and_fallback("a", &["m1"], 0);
+        let b1 = backend_with_models_and_fallback("b", &["m1"], 0);
+        b1.active.fetch_add(2, Ordering::Relaxed);
+        let st = make_state(vec![b0, b1]);
+
+        let order = ordered_candidates(&st, "m1", "new-session");
+        assert_eq!(order.first().copied(), Some(0));
+    }
+
+    #[test]
+    fn pinned_session_keeps_affinity_over_fallback_tier() {
+        let primary = backend_with_models_and_fallback("primary", &["m1"], 0);
+        let backup = backend_with_models_and_fallback("backup", &["m1"], 1);
+        let st = make_state(vec![primary, backup]);
+
+        let sid = "pinned-to-backup";
+        st.session_cache.insert(sid.to_string(), 1);
+
+        let order = ordered_candidates(&st, "m1", sid);
+        assert_eq!(order.first().copied(), Some(1));
+    }
+
+    #[test]
+    fn higher_fallback_tier_used_when_lower_tier_unhealthy() {
+        let primary = backend_with_models_and_fallback("primary", &["m1"], 0);
+        primary.set_healthy(false);
+        let backup = backend_with_models_and_fallback("backup", &["m1"], 1);
+        let st = make_state(vec![primary, backup]);
+
+        let order = ordered_candidates(&st, "m1", "new-session");
+        assert_eq!(order, vec![1]);
     }
 }

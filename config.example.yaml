@@ -43,6 +43,7 @@ backends:
     url: "https://api.openai.com/v1"
     api_key: "${OPENAI_API_KEY}"
     timeout_secs: 120
+    # fallback omitted -> defaults to 0 (preferred for new unpinned requests)
     # health_path omitted -> defaults to /v1/models
     model_aliases:
       - { alias: "gpt-latest", real: "gpt-5.5" }
@@ -54,3 +55,4 @@ backends:
     url: "http://localhost:11434/v1"
     api_key: "my-llama-api-key"
     health_path: "/health"
+    fallback: 1  # try this backend only when all fallback: 0 hosts are unavailable

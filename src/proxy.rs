@@ -1,6 +1,7 @@
 use crate::access_log;
 use crate::auth;
 use crate::error::{ApiError, RouteError};
+use crate::metrics::{self, TokenTracker};
 use crate::routing;
 use crate::state::{AppState, Backend};
 use async_stream::stream;
@@ -13,6 +14,7 @@ use futures::StreamExt;
 use serde_json::Value;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 /// RAII guard that decrements a backend's in-flight counter on drop. Lives
 /// inside the streaming response body so the count stays accurate for the full
@@ -203,6 +205,7 @@ async fn forward_once(
     }
 
     let guard = ConnGuard::new(backend.active.clone());
+    let upstream_started = Instant::now();
 
     let upstream = http
         .request(method.clone(), &target)
@@ -219,14 +222,32 @@ async fn forward_once(
     let mut upstream_stream = upstream.bytes_stream();
     let s = stream! {
         let _guard = guard; // held until the generator completes or is dropped
+        let mut ttfb_recorded = false;
+        let mut token_tracker = TokenTracker::new();
         while let Some(chunk) = upstream_stream.next().await {
             match chunk {
-                Ok(bytes) => yield Ok::<_, std::io::Error>(bytes),
+                Ok(bytes) => {
+                    if !ttfb_recorded {
+                        metrics::record_time_to_first_byte(upstream_started.elapsed());
+                        ttfb_recorded = true;
+                    }
+                    token_tracker.observe_chunk(&bytes);
+                    yield Ok::<_, std::io::Error>(bytes);
+                }
                 Err(e) => {
                     yield Err(std::io::Error::other(e.to_string()));
                     break;
                 }
             }
+        }
+        token_tracker.finish();
+        let tokens = token_tracker.total_tokens();
+        if tokens > 0 {
+            let duration = token_tracker
+                .stream_duration()
+                .filter(|d| !d.is_zero())
+                .unwrap_or_else(|| upstream_started.elapsed());
+            metrics::record_token_generation(tokens, duration);
         }
     };
 

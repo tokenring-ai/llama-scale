@@ -51,6 +51,7 @@ pub enum LogDestination {
     #[default]
     Console,
     File,
+    None,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
@@ -77,6 +78,10 @@ pub struct BackendConfig {
     pub timeout_secs: u64,
     #[serde(default = "default_health_path")]
     pub health_path: String,
+    /// Routing priority for new (unpinned) requests. Lower values are preferred;
+    /// higher tiers are tried only when no healthy backend exists at a lower tier.
+    #[serde(default)]
+    pub fallback: u32,
     #[serde(default)]
     pub model_aliases: Vec<ModelAlias>,
 }

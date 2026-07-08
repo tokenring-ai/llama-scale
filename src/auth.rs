@@ -26,7 +26,7 @@ pub fn bearer_token(headers: &HeaderMap) -> Option<String> {
 
 /// Paths exempt from authentication.
 fn is_public(path: &str) -> bool {
-    path == "/healthz" || path == "/"
+    path == "/healthz" || path == "/" || path == "/metrics"
 }
 
 /// Axum middleware enforcing the OpenAI-style API key.

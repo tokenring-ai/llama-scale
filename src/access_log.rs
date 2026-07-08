@@ -1,3 +1,4 @@
+use crate::metrics;
 use axum::extract::Request;
 use axum::middleware::Next;
 use axum::response::Response;
@@ -24,10 +25,14 @@ pub async fn access_log(request: Request, next: Next) -> Response {
         .map(|b| b.0.as_str())
         .unwrap_or("-");
 
+    let status = response.status().as_u16();
+    metrics::record_request_duration(latency);
+    metrics::record_request_outcome(status);
+
     tracing::info!(
         method = %method,
         path = %path,
-        status = response.status().as_u16(),
+        status = status,
         backend = %backend,
         latency_ms = latency.as_millis() as u64,
         "request"

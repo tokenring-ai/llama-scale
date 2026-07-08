@@ -3,6 +3,7 @@ mod auth;
 mod config;
 mod error;
 mod health;
+mod metrics;
 mod models;
 mod proxy;
 mod routing;
@@ -13,7 +14,7 @@ use axum::{
     extract::DefaultBodyLimit,
     middleware::{from_fn, from_fn_with_state},
     routing::get,
-    Router,
+    Extension, Router,
 };
 use clap::Parser;
 use std::path::PathBuf;
@@ -36,14 +37,34 @@ struct Args {
         env = "MODEL_ROUTER_CONFIG"
     )]
     config: PathBuf,
+
+    /// Run in the background as a daemon (Unix only).
+    #[arg(short = 'D', long)]
+    daemon: bool,
 }
 
 const MAX_REQUEST_BODY: usize = 100 * 1024 * 1024;
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let args = Args::parse();
-    let cfg = config::Config::load(&args.config)?;
+
+    let log_override = if args.daemon {
+        maybe_daemonize(&args.config)?
+    } else {
+        None
+    };
+
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run(args, log_override))
+}
+
+async fn run(args: Args, log_override: Option<config::LogDestination>) -> Result<()> {
+    let mut cfg = config::Config::load(&args.config)?;
+    if let Some(destination) = log_override {
+        cfg.log.destination = destination;
+    }
     let listen = cfg
         .server
         .listen
@@ -61,6 +82,7 @@ async fn main() -> Result<()> {
         "starting llama-scale"
     );
 
+    let metrics_handle = metrics::init();
     let state = state::AppState::build(cfg)?;
 
     // Background control-plane tasks.
@@ -76,6 +98,7 @@ async fn main() -> Result<()> {
     let app = Router::new()
         .route("/", get(proxy::root))
         .route("/healthz", get(proxy::healthz))
+        .route("/metrics", get(metrics::handle))
         .route("/v1/models", get(models::get_models))
         .route("/models", get(models::get_models))
         .fallback(proxy::proxy)
@@ -83,12 +106,44 @@ async fn main() -> Result<()> {
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY))
         .layer(from_fn(access_log::access_log))
         .layer(CorsLayer::permissive())
+        .layer(Extension(metrics_handle))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(listen).await?;
     tracing::info!("listening on {listen}");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// Detach from the controlling terminal. When logging is not configured for a
+/// file, emits a warning and returns `Some(LogDestination::None)` so logs are
+/// not written to a closed stdio stream after daemonization.
+#[cfg(unix)]
+fn maybe_daemonize(config_path: &PathBuf) -> Result<Option<config::LogDestination>> {
+    use daemonize::Daemonize;
+
+    let cfg = config::Config::load(config_path)?;
+    let log_override = if cfg.log.destination != config::LogDestination::File {
+        eprintln!(
+            "warning: daemon mode with log.destination = {:?}; logging disabled (set log.destination = 'file' to retain logs)",
+            cfg.log.destination
+        );
+        Some(config::LogDestination::None)
+    } else {
+        None
+    };
+
+    let cwd = std::env::current_dir().context("getting current directory")?;
+    Daemonize::new()
+        .working_directory(cwd)
+        .start()
+        .map_err(|e| anyhow::anyhow!("failed to daemonize: {e}"))?;
+    Ok(log_override)
+}
+
+#[cfg(not(unix))]
+fn maybe_daemonize(_config_path: &PathBuf) -> Result<Option<config::LogDestination>> {
+    anyhow::bail!("daemon mode (-D) is only supported on Unix")
 }
 
 /// Install the global tracing subscriber, writing either to stderr (console) or
@@ -101,6 +156,7 @@ fn init_logging(log: &config::LogConfig) -> Result<Option<WorkerGuard>> {
     })?;
 
     match log.destination {
+        config::LogDestination::None => Ok(None),
         config::LogDestination::Console => {
             tracing_subscriber::fmt()
                 .with_env_filter(filter)

@@ -195,6 +195,7 @@ mod tests {
             api_key: String::new(),
             timeout_secs: 30,
             health_path: health_path.into(),
+            fallback: 0,
             model_aliases: vec![],
         };
         Backend::from_cfg(cfg).unwrap()

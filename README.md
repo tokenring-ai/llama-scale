@@ -118,6 +118,12 @@ curl http://localhost:8080/v1/models \
   -H "Authorization: Bearer sk-router-dev-key-change-me"
 ```
 
+Scrape Prometheus metrics (no auth required):
+
+```bash
+curl http://localhost:8080/metrics
+```
+
 ## Sample configuration
 
 The example below routes across four common local inference servers. Adjust host
@@ -163,6 +169,7 @@ backends:
   - name: lmstudio
     url: "http://127.0.0.1:1234/v1"
     api_key: "lm-studio"       # set to match LM Studio's API key if configured
+    fallback: 1                # optional; try only when all fallback: 0 hosts are unavailable
 ```
 
 A fully commented reference copy lives in [`config.example.yaml`](config.example.yaml).
@@ -208,10 +215,12 @@ Each entry describes one upstream OpenAI-compatible server.
 | `api_key` | no | `""` | Sent to the upstream as `Authorization: Bearer <api_key>`. |
 | `timeout_secs` | no | `120` | Per-request upstream timeout in seconds. |
 | `health_path` | no | `"/v1/models"` | Host-root path used for health checks. Replaces the path of `url` — see [Health checks](#health-checks). |
+| `fallback` | no | `0` | Routing priority for new (unpinned) requests. Lower values are preferred; higher tiers are tried only when no healthy backend exists at a lower tier. See [How routing works](#how-routing-works). |
 | `model_aliases` | no | `[]` | Optional `alias` → `real` name map. When set, only alias names are exposed and routable; requests are rewritten to `real` before forwarding. When omitted, every model reported by the upstream `/models` endpoint is exposed under its original id. |
 
 You can list the same backend multiple times (different `name` values) to add more
-capacity for the same models — the router load-balances between healthy replicas.
+capacity for the same models — the router load-balances between healthy replicas
+at the same `fallback` tier.
 
 ## Setting up backends
 
@@ -281,6 +290,29 @@ backends:
 Both backends advertise `llama3.2`; the router load-balances new sessions between
 them while keeping each conversation on one backend.
 
+### Primary and fallback backends
+
+Use `fallback` to express preference order across hosts that serve the same model.
+Backends with `fallback: 0` are tried first; `fallback: 1` is used only when every
+lower tier is unhealthy or fails to connect:
+
+```yaml
+backends:
+  - name: ollama-primary
+    url: "http://127.0.0.1:11434/v1"
+    api_key: "ollama"
+    health_path: "/health"
+    fallback: 0
+
+  - name: vllm-backup
+    url: "http://127.0.0.1:8000/v1"
+    api_key: "local"
+    fallback: 1
+```
+
+Pinned conversations still return to their affinity backend even if it has a higher
+`fallback` value.
+
 ### Health checks
 
 `health_path` is resolved against the **host root**, not relative to `/v1`:
@@ -323,9 +355,13 @@ Rules:
 1. **Session affinity** — repeated turns of one conversation stick to the backend
    that already serves them. The session id is
    `sha256(api_key + model + first_message)`; the first message (typically the
-   system prompt) identifies a conversation without client changes.
-2. **Least connections** — for a brand-new session, the healthy backend with the
-   fewest in-flight requests wins.
+   system prompt) identifies a conversation without client changes. A pinned
+   backend is always tried first, regardless of its `fallback` tier.
+2. **Fallback tiers** — for a brand-new session, healthy backends with the lowest
+   `fallback` value are considered first. Higher tiers are only used when every
+   backend at a lower tier is unhealthy or fails to connect during the request.
+3. **Least connections** — within the same `fallback` tier, the healthy backend
+   with the fewest in-flight requests wins.
 
 Additional rules:
 
@@ -344,16 +380,44 @@ Additional rules:
 | `GET /models` | yes | Alias of `/v1/models` |
 | `* /v1/*` | yes | Proxied to a chosen backend (streaming supported) |
 | `GET /healthz` | no | Liveness probe |
+| `GET /metrics` | no | Prometheus metrics scrape endpoint |
 | `GET /` | no | Service info |
+
+## Prometheus metrics
+
+`GET /metrics` exposes Prometheus text format and does not require authentication.
+Scrape it from Prometheus, Grafana Agent, or any compatible collector.
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `llama_scale_active_connections{backend}` | Gauge | In-flight proxied requests per backend |
+| `llama_scale_requests_total{outcome}` | Counter | Requests by outcome: `success` (2xx), `auth_failure` (401), `server_error` (5xx) |
+| `llama_scale_request_duration_seconds` | Histogram | End-to-end HTTP request duration |
+| `llama_scale_time_to_first_byte_seconds` | Histogram | Time from upstream request start until the first response byte |
+| `llama_scale_tokens_generated_total` | Counter | Completion tokens observed in proxied LLM responses |
+| `llama_scale_tokens_per_second_avg` | Gauge | Exponential moving average of completion tokens per second |
+
+Token counts prefer `usage.completion_tokens` from upstream JSON/SSE when present;
+otherwise they are estimated from streaming `delta.content` chunks.
+
+Example PromQL:
+
+```promql
+sum(llama_scale_active_connections)
+rate(llama_scale_requests_total[5m])
+histogram_quantile(0.95, rate(llama_scale_request_duration_seconds_bucket[5m]))
+rate(llama_scale_tokens_generated_total[5m])
+```
 
 ## Features
 
 - OpenAI-compatible passthrough for any `/v1/*` path
 - Conversation-sticky routing with no client changes
-- Least-connections balancing across replicas of the same model
+- Fallback-tier routing with least-connections balancing within each tier
 - Merged `/models` endpoint with background refresh
 - Per-backend model aliases
 - Periodic health checking with automatic failover
+- Prometheus metrics at `/metrics`
 - Bearer API key authentication
 - `${ENV_VAR}` secret expansion in config
 - Structured HTTP access logging to console or file
