@@ -39,26 +39,29 @@ fn hex(bytes: &[u8]) -> String {
     s
 }
 
-/// Indices of backends that both serve `model` and are currently healthy.
+/// Indices of backends that serve `model`, are healthy, and are not saturated
+/// (`max_connections` not reached). Saturation is re-checked atomically when a
+/// request is actually acquired; this filter is a best-effort pre-screen.
 pub fn healthy_candidates(state: &AppState, model: &str) -> Vec<usize> {
     state
         .backends
         .iter()
         .enumerate()
-        .filter(|(_, b)| b.is_healthy() && b.serves(model))
+        .filter(|(_, b)| b.is_healthy() && !b.is_saturated() && b.serves(model))
         .map(|(i, _)| i)
         .collect()
 }
 
 /// Ordered candidate list for a request:
-/// 1. The session-affinity backend (if any healthy candidate) first.
+/// 1. The session-affinity backend (if any healthy, non-saturated candidate) first.
 /// 2. Remaining candidates ordered by ascending `fallback` tier, then by
 ///    ascending in-flight connection count within each tier.
 ///
 /// New (unpinned) sessions therefore prefer the lowest `fallback` value among
 /// healthy backends, using least-connections as a tiebreaker. Higher fallback
 /// tiers are only attempted when every backend at a lower tier is unavailable
-/// or fails during the request.
+/// or fails during the request. Saturated backends are skipped so load spills
+/// to the next candidate.
 pub fn ordered_candidates(state: &AppState, model: &str, session_id: &str) -> Vec<usize> {
     let mut cands = healthy_candidates(state, model);
     if cands.is_empty() {
@@ -123,23 +126,34 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    fn backend_with_aliases(name: &str, aliases: &[(&str, &str)]) -> Arc<Backend> {
-        let cfg = BackendConfig {
+    fn base_cfg(name: &str, fallback: u32) -> BackendConfig {
+        BackendConfig {
             name: name.into(),
             url: "https://example.com/v1".into(),
             api_key: "k".into(),
             timeout_secs: 120,
+            stream_idle_timeout_secs: 120,
+            stream_timeout_secs: 0,
+            max_connections: 0,
             health_path: "/models".into(),
-            fallback: 0,
-            model_aliases: aliases
-                .iter()
-                .map(|(a, r)| ModelAlias {
-                    alias: a.to_string(),
-                    real: r.to_string(),
-                })
-                .collect(),
-        };
-        Arc::new(Backend::from_cfg(cfg).unwrap())
+            fallback,
+            model_aliases: vec![],
+        }
+    }
+
+    fn backend_with_aliases(name: &str, aliases: &[(&str, &str)]) -> Arc<Backend> {
+        let mut cfg = base_cfg(name, 0);
+        cfg.model_aliases = aliases
+            .iter()
+            .map(|(a, r)| ModelAlias {
+                alias: a.to_string(),
+                real: r.to_string(),
+            })
+            .collect();
+        let backend = Backend::from_cfg(cfg).unwrap();
+        // from_cfg starts unhealthy; tests that exercise routing mark healthy.
+        backend.set_healthy(true);
+        Arc::new(backend)
     }
 
     fn backend_with_models(name: &str, models: &[&str]) -> Arc<Backend> {
@@ -151,18 +165,25 @@ mod tests {
         models: &[&str],
         fallback: u32,
     ) -> Arc<Backend> {
-        let cfg = BackendConfig {
-            name: name.into(),
-            url: "https://example.com/v1".into(),
-            api_key: "k".into(),
-            timeout_secs: 120,
-            health_path: "/models".into(),
-            fallback,
-            model_aliases: vec![],
-        };
+        let backend = Backend::from_cfg(base_cfg(name, fallback)).unwrap();
+        *backend.raw_models.write().expect("raw_models poisoned") =
+            models.iter().map(|s| s.to_string()).collect();
+        // from_cfg starts unhealthy; mark up so candidate selection includes it.
+        backend.set_healthy(true);
+        Arc::new(backend)
+    }
+
+    fn backend_with_models_and_max(
+        name: &str,
+        models: &[&str],
+        max_connections: u64,
+    ) -> Arc<Backend> {
+        let mut cfg = base_cfg(name, 0);
+        cfg.max_connections = max_connections;
         let backend = Backend::from_cfg(cfg).unwrap();
         *backend.raw_models.write().expect("raw_models poisoned") =
             models.iter().map(|s| s.to_string()).collect();
+        backend.set_healthy(true);
         Arc::new(backend)
     }
 
@@ -293,5 +314,38 @@ mod tests {
 
         let order = ordered_candidates(&st, "m1", "new-session");
         assert_eq!(order, vec![1]);
+    }
+
+    #[test]
+    fn saturated_backends_are_skipped() {
+        let limited = backend_with_models_and_max("limited", &["m1"], 1);
+        limited.active.store(1, Ordering::Relaxed); // at capacity
+        let spare = backend_with_models_and_max("spare", &["m1"], 4);
+        let st = make_state(vec![limited, spare]);
+
+        assert_eq!(healthy_candidates(&st, "m1"), vec![1]);
+        assert_eq!(ordered_candidates(&st, "m1", "s"), vec![1]);
+    }
+
+    #[test]
+    fn saturated_affinity_backend_is_skipped() {
+        let limited = backend_with_models_and_max("limited", &["m1"], 1);
+        limited.active.store(1, Ordering::Relaxed);
+        let spare = backend_with_models("spare", &["m1"]);
+        let st = make_state(vec![limited, spare]);
+
+        let sid = "pinned-to-full";
+        st.session_cache.insert(sid.to_string(), 0);
+
+        // Affinity target is saturated; only the spare remains.
+        assert_eq!(ordered_candidates(&st, "m1", sid), vec![1]);
+    }
+
+    #[test]
+    fn zero_max_connections_is_unlimited() {
+        let b = backend_with_models_and_max("open", &["m1"], 0);
+        b.active.store(10_000, Ordering::Relaxed);
+        let st = make_state(vec![b]);
+        assert_eq!(healthy_candidates(&st, "m1"), vec![0]);
     }
 }

@@ -101,8 +101,10 @@ pub async fn refresh_once(state: &Arc<AppState>) {
 }
 
 /// Background loop refreshing the merged model list.
+///
+/// The first refresh is performed at process startup (before listen); this
+/// loop only handles the periodic updates after that.
 pub async fn run_models_refresh(state: Arc<AppState>) {
-    refresh_once(&state).await;
     loop {
         tokio::time::sleep(state.models_refresh_interval).await;
         refresh_once(&state).await;

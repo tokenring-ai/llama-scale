@@ -272,14 +272,11 @@ mod tests {
     #[test]
     fn parses_streaming_and_usage_tokens() {
         let mut tracker = TokenTracker::new();
-        tracker.observe_chunk(
-            b"data: {\"choices\":[{\"delta\":{\"content\":\"hello world\"}}]}\n",
-        );
+        tracker.observe_chunk(b"data: {\"choices\":[{\"delta\":{\"content\":\"hello world\"}}]}\n");
         assert_eq!(tracker.total_tokens(), 3);
 
-        tracker.observe_chunk(
-            b"data: {\"usage\":{\"completion_tokens\":42,\"prompt_tokens\":10}}\n",
-        );
+        tracker
+            .observe_chunk(b"data: {\"usage\":{\"completion_tokens\":42,\"prompt_tokens\":10}}\n");
         assert_eq!(tracker.total_tokens(), 42);
     }
 }

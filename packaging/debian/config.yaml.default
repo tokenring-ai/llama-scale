@@ -25,3 +25,7 @@ backends:
     url: "http://127.0.0.1:11434/v1"
     api_key: "ollama"
     health_path: "/health"
+    # timeout_secs: 120              # max wait for response headers
+    # stream_idle_timeout_secs: 120  # max silence between stream chunks (0 = off)
+    # stream_timeout_secs: 0         # max total stream body time (0 = unlimited)
+    # max_connections: 0             # concurrent in-flight cap (0 = unlimited)

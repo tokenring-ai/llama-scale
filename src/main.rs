@@ -85,7 +85,21 @@ async fn run(args: Args, log_override: Option<config::LogDestination>) -> Result
     let metrics_handle = metrics::init();
     let state = state::AppState::build(cfg)?;
 
-    // Background control-plane tasks.
+    // Initial control-plane pass before accepting traffic: backends start
+    // unhealthy with an empty model cache, so probe health and build the
+    // merged /models list once before the server listens.
+    tracing::info!("running initial health checks and model list refresh");
+    health::check_all(&state).await;
+    models::refresh_once(&state).await;
+    let healthy = state.backends.iter().filter(|b| b.is_healthy()).count();
+    tracing::info!(
+        healthy_backends = healthy,
+        total_backends = state.backends.len(),
+        ready = state.is_ready(),
+        "initial control-plane pass complete"
+    );
+
+    // Background control-plane tasks (periodic after the initial pass above).
     let st = state.clone();
     tokio::spawn(async move {
         models::run_models_refresh(st).await;
@@ -98,6 +112,7 @@ async fn run(args: Args, log_override: Option<config::LogDestination>) -> Result
     let app = Router::new()
         .route("/", get(proxy::root))
         .route("/healthz", get(proxy::healthz))
+        .route("/readyz", get(proxy::readyz))
         .route("/metrics", get(metrics::handle))
         .route("/v1/models", get(models::get_models))
         .route("/models", get(models::get_models))

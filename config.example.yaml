@@ -42,7 +42,14 @@ backends:
   - name: openai
     url: "https://api.openai.com/v1"
     api_key: "${OPENAI_API_KEY}"
+    # Max wait for response headers (not the full stream body).
     timeout_secs: 120
+    # Max silence between stream chunks; 0 disables. Default 120.
+    # stream_idle_timeout_secs: 120
+    # Max total stream body duration after headers; 0 = unlimited (default).
+    # stream_timeout_secs: 0
+    # Cap concurrent in-flight requests; 0 = unlimited (default).
+    # max_connections: 0
     # fallback omitted -> defaults to 0 (preferred for new unpinned requests)
     # health_path omitted -> defaults to /v1/models
     model_aliases:
@@ -55,4 +62,5 @@ backends:
     url: "http://localhost:11434/v1"
     api_key: "my-llama-api-key"
     health_path: "/health"
+    max_connections: 2  # protect a small local GPU from overload
     fallback: 1  # try this backend only when all fallback: 0 hosts are unavailable

@@ -14,7 +14,7 @@ use futures::StreamExt;
 use serde_json::Value;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// RAII guard that decrements a backend's in-flight counter on drop. Lives
 /// inside the streaming response body so the count stays accurate for the full
@@ -24,15 +24,35 @@ struct ConnGuard {
 }
 
 impl ConnGuard {
-    fn new(active: Arc<AtomicU64>) -> Self {
-        active.fetch_add(1, Ordering::Relaxed);
-        Self { active }
+    /// Atomically reserve one in-flight slot. Returns `None` when
+    /// `max_connections > 0` and the backend is already at capacity.
+    /// `max_connections == 0` means unlimited.
+    fn try_acquire(active: &Arc<AtomicU64>, max_connections: u64) -> Option<Self> {
+        loop {
+            let cur = active.load(Ordering::Relaxed);
+            if max_connections > 0 && cur >= max_connections {
+                return None;
+            }
+            match active.compare_exchange_weak(
+                cur,
+                cur.saturating_add(1),
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    return Some(Self {
+                        active: Arc::clone(active),
+                    })
+                }
+                Err(_) => continue,
+            }
+        }
     }
 }
 
 impl Drop for ConnGuard {
     fn drop(&mut self) {
-        self.active.fetch_sub(1, Ordering::Relaxed);
+        self.active.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -82,13 +102,35 @@ pub async fn root() -> axum::Json<Value> {
     axum::Json(serde_json::json!({
         "service": "llama-scale",
         "status": "ok",
-        "endpoints": { "models": "/v1/models", "chat": "/v1/chat/completions" }
+        "endpoints": {
+            "models": "/v1/models",
+            "chat": "/v1/chat/completions",
+            "healthz": "/healthz",
+            "readyz": "/readyz",
+        }
     }))
 }
 
 /// `GET /healthz` -> liveness probe (unauthenticated).
 pub async fn healthz() -> &'static str {
     "ok"
+}
+
+/// `GET /readyz` -> readiness probe (unauthenticated).
+///
+/// Returns 200 when at least one backend is currently healthy; 503 otherwise.
+/// Orchestrators should use this (not `/healthz`) to decide whether to send
+/// traffic after deploy or when all upstreams are down.
+pub async fn readyz(State(state): State<Arc<AppState>>) -> Response {
+    if state.is_ready() {
+        (axum::http::StatusCode::OK, "ok").into_response()
+    } else {
+        (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "not ready: no healthy backends",
+        )
+            .into_response()
+    }
 }
 
 /// Fallback handler that proxies any unmatched `/v1/*` path to a chosen backend.
@@ -146,7 +188,11 @@ pub async fn proxy(
         .await
         {
             Ok(mut resp) => {
-                state.session_cache.insert(sid.clone(), idx);
+                // Only pin on 2xx so a 4xx/5xx does not stick the session to a
+                // bad backend for the full session TTL.
+                if resp.status().is_success() {
+                    state.session_cache.insert(sid.clone(), idx);
+                }
                 resp.extensions_mut()
                     .insert(access_log::RoutedBackend(backend.cfg.name.clone()));
                 return Ok(resp);
@@ -169,8 +215,8 @@ pub async fn proxy(
 /// Attempt one backend. Returns:
 /// - `Ok(response)` for any HTTP response received from upstream (including
 ///   4xx/5xx), which is passed straight through to the client.
-/// - `Err` only when no response was received at all (connect/timeout failure),
-///   signaling the caller to retry on the next candidate.
+/// - `Err` only when no response was received at all (connect/timeout/capacity
+///   failure), signaling the caller to retry on the next candidate.
 #[allow(clippy::too_many_arguments)]
 async fn forward_once(
     http: &reqwest::Client,
@@ -204,29 +250,117 @@ async fn forward_once(
         fwd.insert(axum::http::header::AUTHORIZATION, hv);
     }
 
-    let guard = ConnGuard::new(backend.active.clone());
-    let upstream_started = Instant::now();
+    // Reserve capacity before contacting upstream so we never oversubscribe a
+    // backend under concurrent load. Fail over if this backend is full.
+    let guard =
+        ConnGuard::try_acquire(&backend.active, backend.cfg.max_connections).ok_or_else(|| {
+            format!(
+                "backend '{}' at max_connections ({})",
+                backend.cfg.name, backend.cfg.max_connections
+            )
+        })?;
 
-    let upstream = http
+    let upstream_started = Instant::now();
+    // Header timeout only — long streaming bodies are bounded separately by
+    // stream_idle_timeout_secs / stream_timeout_secs.
+    let header_timeout = Duration::from_secs(backend.cfg.timeout_secs.max(1));
+
+    let send_fut = http
         .request(method.clone(), &target)
         .headers(fwd)
         .body(send_body)
-        .send()
-        .await
-        .map_err(|e| format!("upstream request failed: {e}"))?;
+        .send();
+
+    let upstream = match tokio::time::timeout(header_timeout, send_fut).await {
+        Ok(Ok(resp)) => resp,
+        Ok(Err(e)) => return Err(format!("upstream request failed: {e}")),
+        Err(_) => {
+            return Err(format!(
+                "upstream header timeout after {}s",
+                header_timeout.as_secs()
+            ))
+        }
+    };
 
     let status = upstream.status();
     let mut out_headers = upstream.headers().clone();
     strip_response_headers(&mut out_headers);
+
+    let idle_timeout = if backend.cfg.stream_idle_timeout_secs > 0 {
+        Some(Duration::from_secs(backend.cfg.stream_idle_timeout_secs))
+    } else {
+        None
+    };
+    let body_deadline = if backend.cfg.stream_timeout_secs > 0 {
+        Some(upstream_started + Duration::from_secs(backend.cfg.stream_timeout_secs))
+    } else {
+        None
+    };
 
     let mut upstream_stream = upstream.bytes_stream();
     let s = stream! {
         let _guard = guard; // held until the generator completes or is dropped
         let mut ttfb_recorded = false;
         let mut token_tracker = TokenTracker::new();
-        while let Some(chunk) = upstream_stream.next().await {
-            match chunk {
-                Ok(bytes) => {
+
+        loop {
+            if let Some(deadline) = body_deadline {
+                let now = Instant::now();
+                if now >= deadline {
+                    yield Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "upstream stream total timeout",
+                    ));
+                    break;
+                }
+            }
+
+            let wait = match (idle_timeout, body_deadline) {
+                (Some(idle), Some(deadline)) => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        yield Err(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "upstream stream total timeout",
+                        ));
+                        break;
+                    }
+                    Some(idle.min(remaining))
+                }
+                (Some(idle), None) => Some(idle),
+                (None, Some(deadline)) => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        yield Err(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "upstream stream total timeout",
+                        ));
+                        break;
+                    }
+                    Some(remaining)
+                }
+                (None, None) => None,
+            };
+
+            let next = if let Some(limit) = wait {
+                match tokio::time::timeout(limit, upstream_stream.next()).await {
+                    Ok(item) => item,
+                    Err(_) => {
+                        let kind = if body_deadline.is_some_and(|d| Instant::now() >= d) {
+                            "upstream stream total timeout"
+                        } else {
+                            "upstream stream idle timeout"
+                        };
+                        yield Err(std::io::Error::new(std::io::ErrorKind::TimedOut, kind));
+                        break;
+                    }
+                }
+            } else {
+                upstream_stream.next().await
+            };
+
+            match next {
+                Some(Ok(bytes)) => {
                     if !ttfb_recorded {
                         metrics::record_time_to_first_byte(upstream_started.elapsed());
                         ttfb_recorded = true;
@@ -234,12 +368,14 @@ async fn forward_once(
                     token_tracker.observe_chunk(&bytes);
                     yield Ok::<_, std::io::Error>(bytes);
                 }
-                Err(e) => {
+                Some(Err(e)) => {
                     yield Err(std::io::Error::other(e.to_string()));
                     break;
                 }
+                None => break,
             }
         }
+
         token_tracker.finish();
         let tokens = token_tracker.total_tokens();
         if tokens > 0 {
@@ -255,4 +391,35 @@ async fn forward_once(
     *resp.status_mut() = status;
     *resp.headers_mut() = out_headers;
     Ok(resp)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn try_acquire_respects_max_connections() {
+        let active = Arc::new(AtomicU64::new(0));
+        let g1 = ConnGuard::try_acquire(&active, 2).expect("first slot");
+        let g2 = ConnGuard::try_acquire(&active, 2).expect("second slot");
+        assert!(ConnGuard::try_acquire(&active, 2).is_none());
+        assert_eq!(active.load(Ordering::Relaxed), 2);
+        drop(g1);
+        let g3 = ConnGuard::try_acquire(&active, 2).expect("slot after release");
+        assert_eq!(active.load(Ordering::Relaxed), 2);
+        drop(g2);
+        drop(g3);
+        assert_eq!(active.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn try_acquire_unlimited_when_max_zero() {
+        let active = Arc::new(AtomicU64::new(0));
+        let guards: Vec<_> = (0..50)
+            .map(|_| ConnGuard::try_acquire(&active, 0).expect("unlimited"))
+            .collect();
+        assert_eq!(active.load(Ordering::Relaxed), 50);
+        drop(guards);
+        assert_eq!(active.load(Ordering::Relaxed), 0);
+    }
 }

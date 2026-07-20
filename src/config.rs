@@ -74,8 +74,22 @@ pub struct BackendConfig {
     pub url: String,
     #[serde(default)]
     pub api_key: String,
+    /// Max wait for upstream response *headers* (seconds). Does not bound the
+    /// full stream body — see `stream_idle_timeout_secs` / `stream_timeout_secs`.
     #[serde(default = "default_timeout")]
     pub timeout_secs: u64,
+    /// Max silence between body chunks while streaming (seconds). `0` disables
+    /// the idle timeout. Defaults to 120.
+    #[serde(default = "default_stream_idle_timeout")]
+    pub stream_idle_timeout_secs: u64,
+    /// Max total time for the response body after headers (seconds). `0` means
+    /// unlimited (default), so long generations are not cut off.
+    #[serde(default)]
+    pub stream_timeout_secs: u64,
+    /// Max concurrent in-flight proxied requests to this backend. `0` means
+    /// unlimited (default). Saturated backends are skipped by the router.
+    #[serde(default)]
+    pub max_connections: u64,
     #[serde(default = "default_health_path")]
     pub health_path: String,
     /// Routing priority for new (unpinned) requests. Lower values are preferred;
@@ -87,6 +101,9 @@ pub struct BackendConfig {
 }
 
 fn default_timeout() -> u64 {
+    120
+}
+fn default_stream_idle_timeout() -> u64 {
     120
 }
 fn default_health_path() -> String {
@@ -285,6 +302,32 @@ backends:
         assert_eq!(cfg.models_refresh_interval_secs, 30);
         assert_eq!(cfg.health_check_interval_secs, 15);
         assert!(cfg.backends[0].model_aliases.is_empty());
+        assert_eq!(cfg.backends[0].timeout_secs, 120);
+        assert_eq!(cfg.backends[0].stream_idle_timeout_secs, 120);
+        assert_eq!(cfg.backends[0].stream_timeout_secs, 0);
+        assert_eq!(cfg.backends[0].max_connections, 0);
+    }
+
+    #[test]
+    fn parses_concurrency_and_stream_timeouts() {
+        let yaml = r#"
+server:
+  listen: 127.0.0.1:8080
+backends:
+  - name: a
+    url: http://127.0.0.1:11434/v1
+    timeout_secs: 30
+    stream_idle_timeout_secs: 60
+    stream_timeout_secs: 600
+    max_connections: 4
+"#;
+        let cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        cfg.validate().unwrap();
+        let b = &cfg.backends[0];
+        assert_eq!(b.timeout_secs, 30);
+        assert_eq!(b.stream_idle_timeout_secs, 60);
+        assert_eq!(b.stream_timeout_secs, 600);
+        assert_eq!(b.max_connections, 4);
     }
 
     #[test]

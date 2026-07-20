@@ -46,7 +46,9 @@ impl Backend {
             base_url: base,
             aliases,
             has_aliases,
-            healthy: Arc::new(AtomicBool::new(true)),
+            // Start unhealthy until the first successful health probe so we do
+            // not route traffic to unverified backends during cold start.
+            healthy: Arc::new(AtomicBool::new(false)),
             active: Arc::new(AtomicU64::new(0)),
             raw_models: Arc::new(RwLock::new(Vec::new())),
         })
@@ -56,13 +58,20 @@ impl Backend {
         self.healthy.load(Ordering::Relaxed)
     }
 
-    /// Mark this backend up/down. Used by health & model-refresh tasks.
+    /// Mark this backend up/down. Used by the health-check task (sole authority).
     pub fn set_healthy(&self, up: bool) {
         self.healthy.store(up, Ordering::Relaxed);
     }
 
     pub fn active_count(&self) -> u64 {
         self.active.load(Ordering::Relaxed)
+    }
+
+    /// True when `max_connections` is set and the in-flight count is at/above it.
+    /// `max_connections == 0` means unlimited.
+    pub fn is_saturated(&self) -> bool {
+        let max = self.cfg.max_connections;
+        max > 0 && self.active_count() >= max
     }
 
     /// Does this backend serve the requested model name?
@@ -181,12 +190,18 @@ impl AppState {
     pub fn backend(&self, idx: usize) -> Arc<Backend> {
         self.backends[idx].clone()
     }
+
+    /// Ready to receive traffic when at least one backend is currently healthy.
+    pub fn is_ready(&self) -> bool {
+        self.backends.iter().any(|b| b.is_healthy())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::BackendConfig;
+    use std::sync::atomic::Ordering;
 
     fn backend(base: &str, health_path: &str) -> Backend {
         let cfg = BackendConfig {
@@ -194,6 +209,9 @@ mod tests {
             url: base.into(),
             api_key: String::new(),
             timeout_secs: 30,
+            stream_idle_timeout_secs: 120,
+            stream_timeout_secs: 0,
+            max_connections: 0,
             health_path: health_path.into(),
             fallback: 0,
             model_aliases: vec![],
@@ -220,5 +238,65 @@ mod tests {
     fn base_url_trims_trailing_slash() {
         let b = backend("http://localhost:11434/v1/", "/models");
         assert_eq!(b.base_url, "http://localhost:11434/v1");
+    }
+
+    #[test]
+    fn backends_start_unhealthy() {
+        let b = backend("http://localhost:11434/v1", "/health");
+        assert!(!b.is_healthy());
+    }
+
+    #[test]
+    fn is_ready_requires_at_least_one_healthy_backend() {
+        let cfg = Config {
+            server: crate::config::ServerConfig {
+                listen: "127.0.0.1:0".into(),
+                api_keys: vec![],
+            },
+            log: Default::default(),
+            models_refresh_interval_secs: 30,
+            health_check_interval_secs: 15,
+            health_check_timeout_secs: 5,
+            session_ttl_secs: 3600,
+            session_max_entries: 1000,
+            backends: vec![BackendConfig {
+                name: "a".into(),
+                url: "http://127.0.0.1:9/v1".into(),
+                api_key: String::new(),
+                timeout_secs: 30,
+                stream_idle_timeout_secs: 120,
+                stream_timeout_secs: 0,
+                max_connections: 0,
+                health_path: "/health".into(),
+                fallback: 0,
+                model_aliases: vec![],
+            }],
+        };
+        let state = AppState::build(cfg).unwrap();
+        assert!(!state.is_ready());
+        state.backends[0].set_healthy(true);
+        assert!(state.is_ready());
+    }
+
+    #[test]
+    fn is_saturated_respects_max_connections() {
+        let cfg = BackendConfig {
+            name: "b".into(),
+            url: "http://localhost:1/v1".into(),
+            api_key: String::new(),
+            timeout_secs: 30,
+            stream_idle_timeout_secs: 120,
+            stream_timeout_secs: 0,
+            max_connections: 2,
+            health_path: "/health".into(),
+            fallback: 0,
+            model_aliases: vec![],
+        };
+        let b = Backend::from_cfg(cfg).unwrap();
+        assert!(!b.is_saturated());
+        b.active.store(1, Ordering::Relaxed);
+        assert!(!b.is_saturated());
+        b.active.store(2, Ordering::Relaxed);
+        assert!(b.is_saturated());
     }
 }

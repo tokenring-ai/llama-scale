@@ -35,7 +35,84 @@ llama-scale --config config.yaml
 
 The config path can also be set with `MODEL_ROUTER_CONFIG`.
 
-### Option 2: Docker
+### Option 2: Prebuilt binary (GitHub Releases)
+
+Download a release tarball for your platform from the
+[GitHub Releases](https://github.com/tokenring-ai/llama-scale/releases) page.
+Each archive contains the `llama-scale` binary (or `llama-scale.exe` on Windows),
+`config.example.yaml`, and this README.
+
+| Platform | Tarball suffix |
+|----------|----------------|
+| Linux x86_64 | `x86_64-unknown-linux-gnu.tar.gz` |
+| Linux arm64 | `aarch64-unknown-linux-gnu.tar.gz` |
+| macOS Intel | `x86_64-apple-darwin.tar.gz` |
+| macOS Apple Silicon | `aarch64-apple-darwin.tar.gz` |
+| Windows x86_64 | `x86_64-pc-windows-msvc.tar.gz` |
+| Windows arm64 | `aarch64-pc-windows-msvc.tar.gz` |
+
+Replace `<version>` with a release tag such as `v1.0.2`:
+
+```bash
+curl -LO https://github.com/tokenring-ai/llama-scale/releases/download/<version>/llama-scale-<version>-<target>.tar.gz
+tar xzf llama-scale-<version>-<target>.tar.gz
+cp config.example.yaml config.yaml
+# edit config.yaml — see "Sample configuration" below
+
+./llama-scale --config config.yaml
+```
+
+Example for macOS Apple Silicon:
+
+```bash
+curl -LO https://github.com/tokenring-ai/llama-scale/releases/download/v1.0.2/llama-scale-v1.0.2-aarch64-apple-darwin.tar.gz
+tar xzf llama-scale-v1.0.2-aarch64-apple-darwin.tar.gz
+./llama-scale --config config.example.yaml
+```
+
+Move the binary onto your `PATH` (e.g. `sudo mv llama-scale /usr/local/bin/`) if you
+want it available system-wide.
+
+### Option 3: Install from source with Cargo
+
+Requires the [Rust toolchain](https://rust-lang.org/tools/install) (stable).
+
+**Clone the repository and install locally:**
+
+```bash
+git clone https://github.com/tokenring-ai/llama-scale.git
+cd llama-scale
+cargo install --path .
+```
+
+**Or install directly from GitHub without cloning:**
+
+```bash
+cargo install --git https://github.com/tokenring-ai/llama-scale
+```
+
+Then configure and run:
+
+```bash
+cp config.example.yaml config.yaml
+# edit config.yaml — see "Sample configuration" below
+
+llama-scale --config config.yaml
+```
+
+`cargo install` places the binary in `~/.cargo/bin` — ensure that directory is on
+your `PATH`.
+
+To run the latest development code without installing:
+
+```bash
+git clone https://github.com/tokenring-ai/llama-scale.git
+cd llama-scale
+cp config.example.yaml config.yaml
+cargo run --release -- --config config.yaml
+```
+
+### Option 4: Docker
 
 Prebuilt multi-arch images are published to GitHub Container Registry on every
 release:
@@ -55,7 +132,7 @@ Backends running on the Docker host (Ollama, LM Studio, etc.) are usually reache
 at `http://host.docker.internal:<port>/v1` on macOS and Windows. On Linux, add
 `--add-host=host.docker.internal:host-gateway` or use `network_mode: host`.
 
-### Option 3: .deb or .rpm (Linux packages)
+### Option 5: .deb or .rpm (Linux packages)
 
 Download the package for your architecture from the
 [GitHub Releases](https://github.com/tokenring-ai/llama-scale/releases) page:
@@ -89,9 +166,6 @@ The package installs a `llama-scale` systemd service, creates a `llama-scale`
 system user, and places the default config at `/etc/llama-scale/config.yaml`.
 Optional environment variables for `${...}` expansion can be set in
 `/etc/default/llama-scale`.
-
-Tarballs for macOS and Windows are also available on the Releases page if you
-prefer a standalone binary.
 
 ### Try it
 
@@ -152,6 +226,7 @@ backends:
     url: "http://127.0.0.1:11434/v1"
     api_key: "ollama"          # Ollama ignores this; any non-empty value works
     health_path: "/health"     # Ollama root health endpoint
+    max_connections: 2         # optional; cap concurrent in-flight requests (0 = unlimited)
 
   # llama.cpp server — `llama-server --port 8081` (avoid clashing with llama-scale)
   - name: llama-cpp
@@ -164,6 +239,9 @@ backends:
     url: "http://127.0.0.1:8000/v1"
     api_key: "local"
     # health_path defaults to /v1/models (works for vLLM)
+    # timeout_secs: 120              # max wait for response headers
+    # stream_idle_timeout_secs: 120  # max silence between stream chunks (0 = off)
+    # stream_timeout_secs: 0         # max total stream body time (0 = unlimited)
 
   # LM Studio — enable the local server in the Developer tab (default port 1234)
   - name: lmstudio
@@ -213,14 +291,33 @@ Each entry describes one upstream OpenAI-compatible server.
 | `name` | yes | — | Unique label used in logs and the merged `/models` `owned_by` field. |
 | `url` | yes | — | Base URL of the upstream API, including the `/v1` prefix. Must be `http` or `https`. Trailing slashes are stripped. |
 | `api_key` | no | `""` | Sent to the upstream as `Authorization: Bearer <api_key>`. |
-| `timeout_secs` | no | `120` | Per-request upstream timeout in seconds. |
+| `timeout_secs` | no | `120` | Max wait for **response headers** from the upstream (seconds). Does **not** bound the full stream body — see stream timeouts below. |
+| `stream_idle_timeout_secs` | no | `120` | Max silence between body chunks while streaming (seconds). `0` disables the idle timeout. |
+| `stream_timeout_secs` | no | `0` | Max total time for the response body after headers (seconds). `0` means unlimited so long generations are not cut off. |
+| `max_connections` | no | `0` | Max concurrent in-flight proxied requests to this backend. `0` means unlimited. Saturated backends are skipped; load spills to the next candidate. |
 | `health_path` | no | `"/v1/models"` | Host-root path used for health checks. Replaces the path of `url` — see [Health checks](#health-checks). |
 | `fallback` | no | `0` | Routing priority for new (unpinned) requests. Lower values are preferred; higher tiers are tried only when no healthy backend exists at a lower tier. See [How routing works](#how-routing-works). |
 | `model_aliases` | no | `[]` | Optional `alias` → `real` name map. When set, only alias names are exposed and routable; requests are rewritten to `real` before forwarding. When omitted, every model reported by the upstream `/models` endpoint is exposed under its original id. |
 
 You can list the same backend multiple times (different `name` values) to add more
-capacity for the same models — the router load-balances between healthy replicas
-at the same `fallback` tier.
+capacity for the same models — the router load-balances between healthy,
+non-saturated replicas at the same `fallback` tier.
+
+#### Timeouts
+
+Each proxied request uses three independent bounds:
+
+1. **Header timeout** (`timeout_secs`) — time until the upstream returns HTTP
+   status and headers (including first-token latency for many servers).
+2. **Stream idle timeout** (`stream_idle_timeout_secs`) — maximum gap between
+   consecutive body chunks once streaming has started. Protects against stalled
+   generations.
+3. **Stream total timeout** (`stream_timeout_secs`) — optional absolute cap on
+   body duration after headers. Leave at `0` for long completions.
+
+Connect timeout is fixed at 5 seconds on the shared HTTP client. Health probes
+and model-list fetches use `health_check_timeout_secs` and `timeout_secs`
+respectively (see router tuning above).
 
 ## Setting up backends
 
@@ -356,12 +453,18 @@ Rules:
    that already serves them. The session id is
    `sha256(api_key + model + first_message)`; the first message (typically the
    system prompt) identifies a conversation without client changes. A pinned
-   backend is always tried first, regardless of its `fallback` tier.
+   backend is tried first when it is still healthy and not saturated, regardless
+   of its `fallback` tier. Affinity is recorded only after a **2xx** upstream
+   response — 4xx/5xx do not pin the session.
 2. **Fallback tiers** — for a brand-new session, healthy backends with the lowest
    `fallback` value are considered first. Higher tiers are only used when every
-   backend at a lower tier is unhealthy or fails to connect during the request.
+   backend at a lower tier is unhealthy, saturated, or fails to connect during
+   the request.
 3. **Least connections** — within the same `fallback` tier, the healthy backend
    with the fewest in-flight requests wins.
+4. **Concurrency caps** — when `max_connections` is set, backends at capacity are
+   skipped. A slot is reserved atomically before the upstream call so concurrent
+   requests cannot oversubscribe a backend.
 
 Additional rules:
 
@@ -369,8 +472,24 @@ Additional rules:
   are rejected with HTTP 400 (except `GET /v1/models`, served from cache).
 - A backend serves a model if it is a configured alias, or (with no aliases) the
   model appears in its upstream `/models` listing.
-- If a backend connection fails, the router retries the next healthy candidate.
-  Non-2xx HTTP responses from an upstream are passed through unchanged.
+- If a backend connection fails, times out (header or stream), or is at
+  `max_connections`, the router retries the next healthy candidate.
+  Non-2xx HTTP responses from an upstream are passed through unchanged (no
+  failover on application errors).
+
+### Startup and readiness
+
+On boot, backends start as **unhealthy** with an empty model cache. llama-scale
+runs one health-check pass and one models refresh **before** listening for
+traffic, then continues both on the configured intervals.
+
+| Probe | Path | Meaning |
+|-------|------|---------|
+| Liveness | `GET /healthz` | Process is up (always `ok` when reachable). |
+| Readiness | `GET /readyz` | At least one backend is currently healthy (`200`); otherwise `503`. |
+
+Use `/readyz` (not `/healthz`) in Kubernetes or Docker healthchecks when you want
+to wait until upstreams are verified.
 
 ## API endpoints
 
@@ -380,6 +499,7 @@ Additional rules:
 | `GET /models` | yes | Alias of `/v1/models` |
 | `* /v1/*` | yes | Proxied to a chosen backend (streaming supported) |
 | `GET /healthz` | no | Liveness probe |
+| `GET /readyz` | no | Readiness probe (any healthy backend) |
 | `GET /metrics` | no | Prometheus metrics scrape endpoint |
 | `GET /` | no | Service info |
 
@@ -412,11 +532,14 @@ rate(llama_scale_tokens_generated_total[5m])
 ## Features
 
 - OpenAI-compatible passthrough for any `/v1/*` path
-- Conversation-sticky routing with no client changes
+- Conversation-sticky routing with no client changes (pin on 2xx only)
 - Fallback-tier routing with least-connections balancing within each tier
+- Per-backend `max_connections` concurrency caps with failover when saturated
+- Stream-aware timeouts (header / idle / optional total)
 - Merged `/models` endpoint with background refresh
 - Per-backend model aliases
 - Periodic health checking with automatic failover
+- Startup health + models pass before listen; `/healthz` and `/readyz`
 - Prometheus metrics at `/metrics`
 - Bearer API key authentication
 - `${ENV_VAR}` secret expansion in config
@@ -424,17 +547,15 @@ rate(llama_scale_tokens_generated_total[5m])
 
 ## Development
 
-Build and run from source with [Rust](https://rust-lang.org/tools/install):
-
-```bash
-cp config.example.yaml config.yaml
-cargo run -- --config config.yaml
-```
+Contributing or hacking on the router? Clone the repo (see
+[Option 3: Install from source with Cargo](#option-3-install-from-source-with-cargo))
+and use:
 
 ```bash
 cargo fmt
 cargo clippy --all-targets -- -D warnings
 cargo test
+cargo run -- --config config.yaml
 ```
 
 ## License
