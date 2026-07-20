@@ -259,7 +259,39 @@ A fully commented reference copy lives in [`config.example.yaml`](config.example
 | Field | Description |
 |-------|-------------|
 | `listen` | Socket address to bind, e.g. `"0.0.0.0:8080"` or `"127.0.0.1:11435"`. |
-| `api_keys` | Bearer tokens clients must send as `Authorization: Bearer <key>`. Leave empty to disable authentication (open access). |
+| `api_keys` | Bearer tokens clients must send as `Authorization: Bearer <key>`. Leave empty to disable authentication (open access). Accepts either a flat list of keys, or a map for multi-user setups — see below. |
+
+#### `api_keys`: single vs. multi-user
+
+The simple form is a flat list; every key is equivalent, can call any model,
+and has no concurrency cap:
+
+```yaml
+server:
+  api_keys:
+    - "sk-router-dev-key-change-me"
+```
+
+For multi-user setups, use a map from key to per-key settings instead:
+
+```yaml
+server:
+  api_keys:
+    sk-alice-key:
+      id: alice               # non-secret label for logs (defaults to a
+                               # masked key prefix if omitted)
+      allowed_models:         # models this key may request; omit/empty = all
+        - "gpt-4"
+        - "llama-3*"          # trailing "*" matches by prefix
+      concurrent_requests: 2  # max in-flight requests for this key; 0/omit = unlimited
+    sk-bob-key:
+      id: bob                 # no allowed_models/concurrent_requests -> unrestricted
+```
+
+A request for a model outside `allowed_models` gets `403 model_not_allowed`;
+one that would exceed `concurrent_requests` gets `429 rate_limit_error`. Each
+key's `id` (never the raw key) is recorded in the access log and, if
+restricted, filters what that key sees from `/v1/models`.
 
 ### `log`
 

@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize, Clone)]
@@ -41,8 +41,109 @@ fn default_session_max() -> u64 {
 #[derive(Debug, Deserialize, Clone)]
 pub struct ServerConfig {
     pub listen: String,
+    /// Bearer keys accepted from clients. Accepts either:
+    /// - a flat list of key strings (legacy; every key is equivalent and
+    ///   unrestricted), or
+    /// - a map of `key -> { id, allowed_models, concurrent_requests }` for
+    ///   multi-user setups where each key gets its own identity, model
+    ///   allowlist, and concurrency cap.
+    ///
+    /// Leave empty to disable authentication (open access).
     #[serde(default)]
-    pub api_keys: Vec<String>,
+    pub api_keys: RawApiKeys,
+}
+
+/// Raw (as-parsed) shape of `server.api_keys`. Use [`ServerConfig::api_key_map`]
+/// to get the normalized per-key view regardless of which form was used.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(untagged)]
+pub enum RawApiKeys {
+    List(Vec<String>),
+    Map(HashMap<String, RawApiKeyEntry>),
+}
+
+impl Default for RawApiKeys {
+    fn default() -> Self {
+        RawApiKeys::List(Vec::new())
+    }
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct RawApiKeyEntry {
+    /// Opaque label identifying this key's owner in logs and diagnostics.
+    /// Defaults to a truncated, non-secret prefix of the key when omitted.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// Model ids (or `prefix*` glob patterns) this key may request. Empty
+    /// means unrestricted.
+    #[serde(default)]
+    pub allowed_models: Vec<String>,
+    /// Max concurrent in-flight requests for this key. `0` (default) means
+    /// unlimited.
+    #[serde(default)]
+    pub concurrent_requests: u64,
+}
+
+/// Normalized, post-validation view of one API key's settings.
+#[derive(Debug, Clone)]
+pub struct ApiKeyEntry {
+    pub id: String,
+    pub allowed_models: Vec<String>,
+    pub concurrent_requests: u64,
+}
+
+/// Non-secret display id derived from a raw key when no explicit `id` is
+/// configured, so logs never carry the full bearer token.
+fn mask_key(key: &str) -> String {
+    let prefix: String = key.chars().take(8).collect();
+    format!("{prefix}…")
+}
+
+impl ServerConfig {
+    /// Normalize `api_keys` (either form) into `key -> ApiKeyEntry`.
+    pub fn api_key_map(&self) -> HashMap<String, ApiKeyEntry> {
+        match &self.api_keys {
+            RawApiKeys::List(keys) => keys
+                .iter()
+                .map(|k| {
+                    (
+                        k.clone(),
+                        ApiKeyEntry {
+                            id: mask_key(k),
+                            allowed_models: Vec::new(),
+                            concurrent_requests: 0,
+                        },
+                    )
+                })
+                .collect(),
+            RawApiKeys::Map(entries) => entries
+                .iter()
+                .map(|(k, e)| {
+                    (
+                        k.clone(),
+                        ApiKeyEntry {
+                            id: e.id.clone().unwrap_or_else(|| mask_key(k)),
+                            allowed_models: e.allowed_models.clone(),
+                            concurrent_requests: e.concurrent_requests,
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+}
+
+/// Does `model` match one of the `allowed` patterns? A pattern ending in `*`
+/// matches by prefix (e.g. `gpt-4*` matches `gpt-4-turbo`); any other pattern
+/// requires an exact match. An empty pattern list allows every model.
+pub fn model_allowed(allowed: &[String], model: &str) -> bool {
+    if allowed.is_empty() {
+        return true;
+    }
+    allowed.iter().any(|p| match p.strip_suffix('*') {
+        Some(prefix) => model.starts_with(prefix),
+        None => p == model,
+    })
 }
 
 #[derive(Debug, Deserialize, Clone, Default, PartialEq, Eq)]
@@ -204,6 +305,20 @@ impl Config {
             }
         }
 
+        for (key, entry) in self.server.api_key_map() {
+            if key.trim().is_empty() {
+                return Err(anyhow!("server.api_keys contains an empty key"));
+            }
+            for m in &entry.allowed_models {
+                if m.trim().is_empty() {
+                    return Err(anyhow!(
+                        "api key '{}' has an empty entry in allowed_models",
+                        entry.id
+                    ));
+                }
+            }
+        }
+
         Ok(())
     }
 }
@@ -306,6 +421,71 @@ backends:
         assert_eq!(cfg.backends[0].stream_idle_timeout_secs, 120);
         assert_eq!(cfg.backends[0].stream_timeout_secs, 0);
         assert_eq!(cfg.backends[0].max_connections, 0);
+
+        let keys = cfg.server.api_key_map();
+        let entry = keys.get("sk-test").unwrap();
+        assert_eq!(entry.id, "sk-test…"); // legacy list form: id defaults to a masked key
+        assert!(entry.allowed_models.is_empty());
+        assert_eq!(entry.concurrent_requests, 0);
+    }
+
+    #[test]
+    fn parses_multi_user_api_keys_map() {
+        let yaml = r#"
+server:
+  listen: 127.0.0.1:8080
+  api_keys:
+    sk-alice:
+      id: alice
+      allowed_models: [gpt-4, llama-3*]
+      concurrent_requests: 2
+    sk-bob:
+      id: bob
+backends:
+  - name: a
+    url: https://api.openai.com/v1
+"#;
+        let cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        cfg.validate().unwrap();
+        let keys = cfg.server.api_key_map();
+
+        let alice = keys.get("sk-alice").unwrap();
+        assert_eq!(alice.id, "alice");
+        assert_eq!(alice.allowed_models, vec!["gpt-4", "llama-3*"]);
+        assert_eq!(alice.concurrent_requests, 2);
+
+        // bob has no allowed_models / concurrent_requests -> unrestricted defaults.
+        let bob = keys.get("sk-bob").unwrap();
+        assert_eq!(bob.id, "bob");
+        assert!(bob.allowed_models.is_empty());
+        assert_eq!(bob.concurrent_requests, 0);
+    }
+
+    #[test]
+    fn empty_allowed_models_entry_is_rejected() {
+        let yaml = r#"
+server:
+  listen: 127.0.0.1:8080
+  api_keys:
+    sk-alice:
+      allowed_models: [""]
+backends:
+  - name: a
+    url: https://api.openai.com/v1
+"#;
+        let cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn model_allowed_matches_exact_and_wildcard() {
+        let patterns = vec!["gpt-4".to_string(), "llama-3*".to_string()];
+        assert!(model_allowed(&patterns, "gpt-4"));
+        assert!(model_allowed(&patterns, "llama-3-70b"));
+        assert!(!model_allowed(&patterns, "gpt-4-turbo"));
+        assert!(!model_allowed(&patterns, "claude-3"));
+        // No patterns -> unrestricted.
+        assert!(model_allowed(&[], "anything"));
     }
 
     #[test]

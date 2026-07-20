@@ -35,6 +35,14 @@ impl ApiError {
     pub fn service_unavailable(msg: impl Into<String>) -> Self {
         Self::new(StatusCode::SERVICE_UNAVAILABLE, "no_available_backend", msg)
     }
+
+    pub fn forbidden(msg: impl Into<String>) -> Self {
+        Self::new(StatusCode::FORBIDDEN, "model_not_allowed", msg)
+    }
+
+    pub fn rate_limited(msg: impl Into<String>) -> Self {
+        Self::new(StatusCode::TOO_MANY_REQUESTS, "rate_limit_error", msg)
+    }
 }
 
 impl IntoResponse for ApiError {

@@ -1,5 +1,6 @@
-use crate::state::{AppState, ModelInfo};
-use axum::extract::State;
+use crate::config;
+use crate::state::{ApiKeyInfo, AppState, ModelInfo};
+use axum::extract::{Extension, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -111,10 +112,13 @@ pub async fn run_models_refresh(state: Arc<AppState>) {
     }
 }
 
-fn render(state: &AppState) -> Value {
+/// Render the merged model list, restricted to `allowed` when the caller's
+/// API key has a model allowlist (empty/`None` means unrestricted).
+fn render(state: &AppState, allowed: Option<&[String]>) -> Value {
     let list = state.models_list.load();
     let data: Vec<Value> = list
         .iter()
+        .filter(|m| allowed.is_none_or(|a| config::model_allowed(a, &m.id)))
         .map(|m| {
             json!({
                 "id": m.id,
@@ -127,7 +131,14 @@ fn render(state: &AppState) -> Value {
     json!({ "object": "list", "data": data })
 }
 
-/// `GET /v1/models` and `GET /models`.
-pub async fn get_models(State(state): State<Arc<AppState>>) -> Response {
-    (StatusCode::OK, Json(render(&state))).into_response()
+/// `GET /v1/models` and `GET /models`. When the caller authenticated with an
+/// API key that has a model allowlist, only those models are listed.
+pub async fn get_models(
+    State(state): State<Arc<AppState>>,
+    key_info: Option<Extension<Arc<ApiKeyInfo>>>,
+) -> Response {
+    let allowed = key_info
+        .as_ref()
+        .map(|Extension(info)| info.allowed_models.as_slice());
+    (StatusCode::OK, Json(render(&state, allowed))).into_response()
 }

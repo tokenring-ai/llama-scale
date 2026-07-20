@@ -2,10 +2,25 @@ use crate::config::Config;
 use anyhow::{anyhow, Result};
 use arc_swap::ArcSwap;
 use moka::sync::Cache;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
+
+/// Per-key identity and limits, resolved from `server.api_keys` at startup.
+/// Shared (via `Arc`) between `AppState` and the request extensions the auth
+/// middleware attaches, so the same live `active` counter is used for
+/// concurrency accounting on every request authenticated with this key.
+pub struct ApiKeyInfo {
+    /// Non-secret label for logs/diagnostics (never the raw key).
+    pub id: String,
+    /// Model ids / `prefix*` patterns this key may request. Empty = unrestricted.
+    pub allowed_models: Vec<String>,
+    /// Max concurrent in-flight requests for this key. `0` = unlimited.
+    pub max_concurrent: u64,
+    /// Number of in-flight requests currently authenticated with this key.
+    pub active: Arc<AtomicU64>,
+}
 
 /// Runtime view of a configured backend.
 pub struct Backend {
@@ -130,7 +145,8 @@ pub struct ModelInfo {
 /// Shared application state.
 pub struct AppState {
     pub backends: Vec<Arc<Backend>>,
-    pub api_keys: Arc<HashSet<String>>,
+    /// `key -> per-key identity/limits`. Empty means authentication is disabled.
+    pub api_keys: Arc<HashMap<String, Arc<ApiKeyInfo>>>,
     pub auth_enabled: bool,
     /// `session_id -> backend index` affinity cache (TTL + capacity bounded).
     pub session_cache: Cache<String, usize>,
@@ -153,7 +169,22 @@ impl AppState {
             backends.push(Arc::new(Backend::from_cfg(bc)?));
         }
 
-        let api_keys: HashSet<String> = cfg.server.api_keys.iter().cloned().collect();
+        let api_keys: HashMap<String, Arc<ApiKeyInfo>> = cfg
+            .server
+            .api_key_map()
+            .into_iter()
+            .map(|(key, entry)| {
+                (
+                    key,
+                    Arc::new(ApiKeyInfo {
+                        id: entry.id,
+                        allowed_models: entry.allowed_models,
+                        max_concurrent: entry.concurrent_requests,
+                        active: Arc::new(AtomicU64::new(0)),
+                    }),
+                )
+            })
+            .collect();
         let auth_enabled = !api_keys.is_empty();
         if !auth_enabled {
             tracing::warn!(
@@ -251,7 +282,7 @@ mod tests {
         let cfg = Config {
             server: crate::config::ServerConfig {
                 listen: "127.0.0.1:0".into(),
-                api_keys: vec![],
+                api_keys: Default::default(),
             },
             log: Default::default(),
             models_refresh_interval_secs: 30,

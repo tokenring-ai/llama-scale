@@ -105,7 +105,7 @@ mod tests {
 
     fn make_state(backends: Vec<Arc<Backend>>) -> Arc<AppState> {
         let http = reqwest::Client::new();
-        let api_keys = Arc::new(["k".to_string()].into_iter().collect());
+        let api_keys = Arc::new(HashMap::new());
         Arc::new(AppState {
             backends,
             api_keys,
@@ -122,6 +122,7 @@ mod tests {
     use crate::state::AppState;
     use arc_swap::ArcSwap;
     use moka::sync::Cache;
+    use std::collections::HashMap;
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
     use std::time::Duration;

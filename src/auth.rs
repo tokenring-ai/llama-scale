@@ -30,9 +30,14 @@ fn is_public(path: &str) -> bool {
 }
 
 /// Axum middleware enforcing the OpenAI-style API key.
+///
+/// On success, attaches the resolved `Arc<ApiKeyInfo>` to the request's
+/// extensions so downstream handlers (routing, model listing) can enforce
+/// per-key model allowlists and concurrency limits without re-parsing the
+/// header or re-checking the map.
 pub async fn require_api_key(
     State(state): State<Arc<AppState>>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
     let path = request.uri().path();
@@ -52,9 +57,11 @@ pub async fn require_api_key(
         }
     };
 
-    if !state.api_keys.contains(&key) {
-        return ApiError::unauthorized("invalid API key").into_response();
-    }
+    let info = match state.api_keys.get(&key) {
+        Some(info) => info.clone(),
+        None => return ApiError::unauthorized("invalid API key").into_response(),
+    };
+    request.extensions_mut().insert(info);
 
     next.run(request).await
 }

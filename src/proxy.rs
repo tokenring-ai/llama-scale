@@ -1,12 +1,13 @@
 use crate::access_log;
 use crate::auth;
+use crate::config;
 use crate::error::{ApiError, RouteError};
 use crate::metrics::{self, TokenTracker};
 use crate::routing;
-use crate::state::{AppState, Backend};
+use crate::state::{ApiKeyInfo, AppState, Backend};
 use async_stream::stream;
 use axum::body::Body;
-use axum::extract::{OriginalUri, State};
+use axum::extract::{Extension, OriginalUri, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
@@ -139,6 +140,7 @@ pub async fn proxy(
     method: Method,
     OriginalUri(original): OriginalUri,
     headers: HeaderMap,
+    key_info: Option<Extension<Arc<ApiKeyInfo>>>,
     body: Bytes,
 ) -> Result<Response, ApiError> {
     let path = original.path().to_string();
@@ -152,6 +154,39 @@ pub async fn proxy(
         )
     })?;
     let model = routing::request_model(&body_json).map_err(RouteError::into_api)?;
+
+    // Multi-user enforcement: the key resolved by the auth middleware (absent
+    // when authentication is disabled) may restrict which models it can call
+    // and how many requests it can have in flight at once.
+    let key_info = key_info.map(|Extension(info)| info);
+    if let Some(info) = &key_info {
+        if !config::model_allowed(&info.allowed_models, model) {
+            let mut resp = ApiError::forbidden(format!(
+                "API key '{}' is not permitted to use model '{model}'",
+                info.id
+            ))
+            .into_response();
+            resp.extensions_mut()
+                .insert(access_log::ApiUser(info.id.clone()));
+            return Ok(resp);
+        }
+    }
+    let key_guard: Option<ConnGuard> = match &key_info {
+        Some(info) => match ConnGuard::try_acquire(&info.active, info.max_concurrent) {
+            Some(g) => Some(g),
+            None => {
+                let mut resp = ApiError::rate_limited(format!(
+                    "API key '{}' has reached its concurrent request limit ({})",
+                    info.id, info.max_concurrent
+                ))
+                .into_response();
+                resp.extensions_mut()
+                    .insert(access_log::ApiUser(info.id.clone()));
+                return Ok(resp);
+            }
+        },
+        None => None,
+    };
 
     // The caller's bearer (or empty when auth is disabled) gives per-user
     // isolation for the conversation hash.
@@ -195,7 +230,11 @@ pub async fn proxy(
                 }
                 resp.extensions_mut()
                     .insert(access_log::RoutedBackend(backend.cfg.name.clone()));
-                return Ok(resp);
+                if let Some(info) = &key_info {
+                    resp.extensions_mut()
+                        .insert(access_log::ApiUser(info.id.clone()));
+                }
+                return Ok(attach_key_guard(resp, key_guard));
             }
             Err(e) => {
                 tracing::warn!(
@@ -393,6 +432,25 @@ async fn forward_once(
     Ok(resp)
 }
 
+/// Re-wrap a response's body so `guard` (the caller's per-key concurrency
+/// slot) is held for as long as the body is being streamed to the client,
+/// mirroring how `forward_once` holds the backend's `ConnGuard` for the life
+/// of its stream. A no-op when `guard` is `None` (authentication disabled).
+fn attach_key_guard(resp: Response, guard: Option<ConnGuard>) -> Response {
+    let Some(guard) = guard else {
+        return resp;
+    };
+    let (parts, body) = resp.into_parts();
+    let mut data = body.into_data_stream();
+    let wrapped = stream! {
+        let _guard = guard;
+        while let Some(chunk) = data.next().await {
+            yield chunk;
+        }
+    };
+    Response::from_parts(parts, Body::from_stream(wrapped))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -421,5 +479,32 @@ mod tests {
         assert_eq!(active.load(Ordering::Relaxed), 50);
         drop(guards);
         assert_eq!(active.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn attach_key_guard_holds_slot_until_body_fully_drained() {
+        let active = Arc::new(AtomicU64::new(0));
+        let guard = ConnGuard::try_acquire(&active, 1).expect("slot");
+        assert_eq!(active.load(Ordering::Relaxed), 1);
+
+        let resp = Response::new(Body::from("hello"));
+        let wrapped = attach_key_guard(resp, Some(guard));
+        // Wrapping alone must not release the slot; only draining the body does.
+        assert_eq!(active.load(Ordering::Relaxed), 1);
+
+        let mut stream = wrapped.into_body().into_data_stream();
+        let mut collected = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            collected.extend_from_slice(&chunk.expect("chunk"));
+        }
+        assert_eq!(collected, b"hello");
+        assert_eq!(active.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn attach_key_guard_is_noop_without_a_guard() {
+        let resp = Response::new(Body::from("hello"));
+        let wrapped = attach_key_guard(resp, None);
+        assert_eq!(wrapped.status(), axum::http::StatusCode::OK);
     }
 }

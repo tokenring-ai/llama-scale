@@ -8,8 +8,24 @@ server:
   listen: "0.0.0.0:8080"
   # OpenAI-style bearer keys accepted from clients. Leave empty to DISABLE
   # authentication (open access) for local development.
+  #
+  # Simple form: a flat list of keys. Every key is equivalent and can call any
+  # model with no concurrency cap.
   api_keys:
     - "sk-router-dev-key-change-me"
+  #
+  # Multi-user form: a map of key -> per-key settings. Each key can have its
+  # own label (for logs), model allowlist, and concurrency cap.
+  # api_keys:
+  #   sk-alice-key:
+  #     id: alice              # non-secret label used in access logs; defaults
+  #                             # to a masked prefix of the key when omitted
+  #     allowed_models:        # models this key may request; omit/empty = all
+  #       - "gpt-4"
+  #       - "llama-3*"         # trailing "*" matches by prefix
+  #     concurrent_requests: 2 # max in-flight requests for this key; 0/omit = unlimited
+  #   sk-bob-key:
+  #     id: bob                # no allowed_models/concurrent_requests -> unrestricted
 
 # Logging (applies to app logs AND HTTP request/access logs).
 #   destination: "console" (stderr, default) or "file"

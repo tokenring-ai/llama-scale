@@ -1,6 +1,6 @@
 [package]
 name = "llama-scale"
-version = "0.1.3"
+version = "1.0.4"
 edition = "2021"
 description = "A Rust-based OpenAI-compatible LLM router with session affinity and least-connections load balancing."
 license = "MIT"

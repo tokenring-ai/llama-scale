@@ -9,6 +9,11 @@ use std::time::Instant;
 #[derive(Clone, Debug)]
 pub struct RoutedBackend(pub String);
 
+/// Extension inserted by the proxy/auth layer identifying which API key (by
+/// its non-secret `id`, never the raw key) the request was authenticated as.
+#[derive(Clone, Debug)]
+pub struct ApiUser(pub String);
+
 /// Access-log middleware: emits one structured line per request with method,
 /// path, status, the backend it was routed to (when applicable), and latency.
 pub async fn access_log(request: Request, next: Next) -> Response {
@@ -25,6 +30,12 @@ pub async fn access_log(request: Request, next: Next) -> Response {
         .map(|b| b.0.as_str())
         .unwrap_or("-");
 
+    let user = response
+        .extensions()
+        .get::<ApiUser>()
+        .map(|u| u.0.as_str())
+        .unwrap_or("-");
+
     let status = response.status().as_u16();
     metrics::record_request_duration(latency);
     metrics::record_request_outcome(status);
@@ -34,6 +45,7 @@ pub async fn access_log(request: Request, next: Next) -> Response {
         path = %path,
         status = status,
         backend = %backend,
+        user = %user,
         latency_ms = latency.as_millis() as u64,
         "request"
     );
