@@ -13,15 +13,17 @@ so context stays warm.
 
 ## Quick start
 
-Platform-specific walkthroughs (packages, systemd, Docker networking, macOS):
+Platform-specific walkthroughs (packages, systemd, Docker, Kubernetes, Proxmox, macOS):
 
-| Platform | Guide |
-|----------|-------|
-| Debian / Ubuntu | [guides/getting-started-debian-ubuntu.md](guides/getting-started-debian-ubuntu.md) |
+| Platform         | Guide                                                                              |
+|------------------|------------------------------------------------------------------------------------|
+| Debian / Ubuntu  | [guides/getting-started-debian-ubuntu.md](guides/getting-started-debian-ubuntu.md) |
 | Red Hat / Fedora | [guides/getting-started-redhat-fedora.md](guides/getting-started-redhat-fedora.md) |
-| macOS | [guides/getting-started-macos.md](guides/getting-started-macos.md) |
-| Docker | [guides/getting-started-docker.md](guides/getting-started-docker.md) |
-| MikroTik | [guides/getting-started-mikrotik.md](guides/getting-started-mikrotik.md) |
+| macOS            | [guides/getting-started-macos.md](guides/getting-started-macos.md)                 |
+| Docker           | [guides/getting-started-docker.md](guides/getting-started-docker.md)               |
+| Kubernetes       | [guides/getting-started-kubernetes.md](guides/getting-started-kubernetes.md)       |
+| Proxmox VE       | [guides/getting-started-proxmox.md](guides/getting-started-proxmox.md)             |
+| MikroTik         | [guides/getting-started-mikrotik.md](guides/getting-started-mikrotik.md)           |
 
 ### Option 1: install script (macOS / Linux)
 
@@ -76,14 +78,14 @@ Download a release tarball for your platform from the
 Each archive contains the `llama-scale` binary (or `llama-scale.exe` on Windows),
 `config.example.yaml`, and this README.
 
-| Platform | Tarball suffix |
-|----------|----------------|
-| Linux x86_64 | `x86_64-unknown-linux-gnu.tar.gz` |
-| Linux arm64 | `aarch64-unknown-linux-gnu.tar.gz` |
-| macOS Intel | `x86_64-apple-darwin.tar.gz` |
-| macOS Apple Silicon | `aarch64-apple-darwin.tar.gz` |
-| Windows x86_64 | `x86_64-pc-windows-msvc.tar.gz` |
-| Windows arm64 | `aarch64-pc-windows-msvc.tar.gz` |
+| Platform            | Tarball suffix                     |
+|---------------------|------------------------------------|
+| Linux x86_64        | `x86_64-unknown-linux-gnu.tar.gz`  |
+| Linux arm64         | `aarch64-unknown-linux-gnu.tar.gz` |
+| macOS Intel         | `x86_64-apple-darwin.tar.gz`       |
+| macOS Apple Silicon | `aarch64-apple-darwin.tar.gz`      |
+| Windows x86_64      | `x86_64-pc-windows-msvc.tar.gz`    |
+| Windows arm64       | `aarch64-pc-windows-msvc.tar.gz`   |
 
 Replace `<version>` with a release tag such as `v1.0.2`:
 
@@ -171,9 +173,9 @@ at `http://host.docker.internal:<port>/v1` on macOS and Windows. On Linux, add
 Download the package for your architecture from the
 [GitHub Releases](https://github.com/tokenring-ai/llama-scale/releases) page:
 
-| Package | Architectures |
-|---------|---------------|
-| `.deb`  | `amd64`, `arm64` |
+| Package | Architectures       |
+|---------|---------------------|
+| `.deb`  | `amd64`, `arm64`    |
 | `.rpm`  | `x86_64`, `aarch64` |
 
 **Debian / Ubuntu:**
@@ -290,12 +292,12 @@ A fully commented reference copy lives in [`config.example.yaml`](config.example
 
 ### `server`
 
-| Field | Description |
-|-------|-------------|
-| `listen` | Socket address to bind, e.g. `"0.0.0.0:8080"` or `"127.0.0.1:11435"`. |
-| `api_keys` | Bearer tokens clients must send as `Authorization: Bearer <key>`. Leave empty to disable authentication (open access). Accepts either a flat list of keys, or a map for multi-user setups — see below. |
-| `tls` | Optional. Terminates TLS directly on the listen socket — see below. Omit to serve plain HTTP (e.g. behind a TLS-terminating reverse proxy). |
-| `admin_token` | Optional. Bearer token guarding privileged endpoints (`/metrics`) — see below. Omit to leave them open. |
+| Field         | Description                                                                                                                                                                                            |
+|---------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `listen`      | Socket address to bind, e.g. `"0.0.0.0:8080"` or `"127.0.0.1:11435"`.                                                                                                                                  |
+| `api_keys`    | Bearer tokens clients must send as `Authorization: Bearer <key>`. Leave empty to disable authentication (open access). Accepts either a flat list of keys, or a map for multi-user setups — see below. |
+| `tls`         | Optional. Terminates TLS directly on the listen socket — see below. Omit to serve plain HTTP (e.g. behind a TLS-terminating reverse proxy).                                                            |
+| `admin_token` | Optional. Bearer token guarding privileged endpoints (`/metrics`) — see below. Omit to leave them open.                                                                                                |
 
 #### `api_keys`: single vs. multi-user
 
@@ -315,8 +317,8 @@ server:
   api_keys:
     sk-alice-key:
       id: alice               # non-secret label for logs (defaults to a
-                               # masked key prefix if omitted)
-      allowed_models:         # models this key may request; omit/empty = all
+      # masked key prefix if omitted)
+      allowed_models: # models this key may request; omit/empty = all
         - "gpt-4"
         - "llama-3*"          # trailing "*" matches by prefix
       concurrent_requests: 2  # max in-flight requests for this key; 0/omit = unlimited
@@ -372,41 +374,41 @@ Docker) need to probe them without credentials.
 
 ### `log`
 
-| Field | Description |
-|-------|-------------|
-| `destination` | `"console"` (stderr, default) or `"file"`. |
-| `file` | Path appended to when `destination` is `"file"`. Required for file logging. |
-| `level` | Fallback log level (`info`, `debug`, …) when the `RUST_LOG` environment variable is not set. |
+| Field         | Description                                                                                  |
+|---------------|----------------------------------------------------------------------------------------------|
+| `destination` | `"console"` (stderr, default) or `"file"`.                                                   |
+| `file`        | Path appended to when `destination` is `"file"`. Required for file logging.                  |
+| `level`       | Fallback log level (`info`, `debug`, …) when the `RUST_LOG` environment variable is not set. |
 
 HTTP access logs (method, path, status, routed backend, latency) use the same
 destination.
 
 ### Router tuning
 
-| Field | Default | Description |
-|-------|---------|-------------|
-| `models_refresh_interval_secs` | `30` | How often the merged `/v1/models` list is rebuilt from all backends. |
-| `health_check_interval_secs` | `15` | How often each backend is probed. Unhealthy backends are skipped until they recover. |
-| `health_check_timeout_secs` | `5` | Timeout for a single health or model-list probe. |
-| `session_ttl_secs` | `3600` | How long a conversation stays pinned to one backend. |
-| `session_max_entries` | `100000` | Maximum number of session bindings kept in memory. |
+| Field                          | Default  | Description                                                                          |
+|--------------------------------|----------|--------------------------------------------------------------------------------------|
+| `models_refresh_interval_secs` | `30`     | How often the merged `/v1/models` list is rebuilt from all backends.                 |
+| `health_check_interval_secs`   | `15`     | How often each backend is probed. Unhealthy backends are skipped until they recover. |
+| `health_check_timeout_secs`    | `5`      | Timeout for a single health or model-list probe.                                     |
+| `session_ttl_secs`             | `3600`   | How long a conversation stays pinned to one backend.                                 |
+| `session_max_entries`          | `100000` | Maximum number of session bindings kept in memory.                                   |
 
 ### `backends` (list)
 
 Each entry describes one upstream OpenAI-compatible server.
 
-| Field | Required | Default | Description |
-|-------|----------|---------|-------------|
-| `name` | yes | — | Unique label used in logs and the merged `/models` `owned_by` field. |
-| `url` | yes | — | Base URL of the upstream API, including the `/v1` prefix. Must be `http` or `https`. Trailing slashes are stripped. |
-| `api_key` | no | `""` | Sent to the upstream as `Authorization: Bearer <api_key>`. |
-| `timeout_secs` | no | `120` | Max wait for **response headers** from the upstream (seconds). Does **not** bound the full stream body — see stream timeouts below. |
-| `stream_idle_timeout_secs` | no | `120` | Max silence between body chunks while streaming (seconds). `0` disables the idle timeout. |
-| `stream_timeout_secs` | no | `0` | Max total time for the response body after headers (seconds). `0` means unlimited so long generations are not cut off. |
-| `max_connections` | no | `0` | Max concurrent in-flight proxied requests to this backend. `0` means unlimited. Saturated backends are skipped; load spills to the next candidate. |
-| `health_path` | no | `"/v1/models"` | Host-root path used for health checks. Replaces the path of `url` — see [Health checks](#health-checks). |
-| `fallback` | no | `0` | Routing priority for new (unpinned) requests. Lower values are preferred; higher tiers are tried only when no healthy backend exists at a lower tier. See [How routing works](#how-routing-works). |
-| `model_aliases` | no | `[]` | Optional `alias` → `real` name map. When set, only alias names are exposed and routable; requests are rewritten to `real` before forwarding. When omitted, every model reported by the upstream `/models` endpoint is exposed under its original id. |
+| Field                      | Required | Default        | Description                                                                                                                                                                                                                                          |
+|----------------------------|----------|----------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `name`                     | yes      | —              | Unique label used in logs and the merged `/models` `owned_by` field.                                                                                                                                                                                 |
+| `url`                      | yes      | —              | Base URL of the upstream API, including the `/v1` prefix. Must be `http` or `https`. Trailing slashes are stripped.                                                                                                                                  |
+| `api_key`                  | no       | `""`           | Sent to the upstream as `Authorization: Bearer <api_key>`.                                                                                                                                                                                           |
+| `timeout_secs`             | no       | `120`          | Max wait for **response headers** from the upstream (seconds). Does **not** bound the full stream body — see stream timeouts below.                                                                                                                  |
+| `stream_idle_timeout_secs` | no       | `120`          | Max silence between body chunks while streaming (seconds). `0` disables the idle timeout.                                                                                                                                                            |
+| `stream_timeout_secs`      | no       | `0`            | Max total time for the response body after headers (seconds). `0` means unlimited so long generations are not cut off.                                                                                                                               |
+| `max_connections`          | no       | `0`            | Max concurrent in-flight proxied requests to this backend. `0` means unlimited. Saturated backends are skipped; load spills to the next candidate.                                                                                                   |
+| `health_path`              | no       | `"/v1/models"` | Host-root path used for health checks. Replaces the path of `url` — see [Health checks](#health-checks).                                                                                                                                             |
+| `fallback`                 | no       | `0`            | Routing priority for new (unpinned) requests. Lower values are preferred; higher tiers are tried only when no healthy backend exists at a lower tier. See [How routing works](#how-routing-works).                                                   |
+| `model_aliases`            | no       | `[]`           | Optional `alias` → `real` name map. When set, only alias names are exposed and routable; requests are rewritten to `real` before forwarding. When omitted, every model reported by the upstream `/models` endpoint is exposed under its original id. |
 
 You can list the same backend multiple times (different `name` values) to add more
 capacity for the same models — the router load-balances between healthy,
@@ -523,10 +525,10 @@ Pinned conversations still return to their affinity backend even if it has a hig
 
 `health_path` is resolved against the **host root**, not relative to `/v1`:
 
-| `url` | `health_path` | Probe target |
-|-------|---------------|--------------|
-| `http://host:11434/v1` | `/health` | `http://host:11434/health` |
-| `http://host:8000/v1` | *(default)* `/v1/models` | `http://host:8000/v1/models` |
+| `url`                  | `health_path`            | Probe target                 |
+|------------------------|--------------------------|------------------------------|
+| `http://host:11434/v1` | `/health`                | `http://host:11434/health`   |
+| `http://host:8000/v1`  | *(default)* `/v1/models` | `http://host:8000/v1/models` |
 
 Ollama and llama.cpp expose a root `/health` endpoint — set `health_path`
 accordingly. vLLM and LM Studio work with the default `/v1/models`.
@@ -592,39 +594,39 @@ On boot, backends start as **unhealthy** with an empty model cache. llama-scale
 runs one health-check pass and one models refresh **before** listening for
 traffic, then continues both on the configured intervals.
 
-| Probe | Path | Meaning |
-|-------|------|---------|
-| Liveness | `GET /healthz` | Process is up (always `ok` when reachable). |
-| Readiness | `GET /readyz` | At least one backend is currently healthy (`200`); otherwise `503`. |
+| Probe     | Path           | Meaning                                                             |
+|-----------|----------------|---------------------------------------------------------------------|
+| Liveness  | `GET /healthz` | Process is up (always `ok` when reachable).                         |
+| Readiness | `GET /readyz`  | At least one backend is currently healthy (`200`); otherwise `503`. |
 
 Use `/readyz` (not `/healthz`) in Kubernetes or Docker healthchecks when you want
 to wait until upstreams are verified.
 
 ## API endpoints
 
-| Path | Auth | Description |
-|------|------|-------------|
-| `GET /v1/models` | yes | Merged, deduplicated model list |
-| `GET /models` | yes | Alias of `/v1/models` |
-| `* /v1/*` | yes | Proxied to a chosen backend (streaming supported) |
-| `GET /healthz` | no | Liveness probe |
-| `GET /readyz` | no | Readiness probe (any healthy backend) |
-| `GET /metrics` | no | Prometheus metrics scrape endpoint |
-| `GET /` | no | Service info |
+| Path             | Auth | Description                                       |
+|------------------|------|---------------------------------------------------|
+| `GET /v1/models` | yes  | Merged, deduplicated model list                   |
+| `GET /models`    | yes  | Alias of `/v1/models`                             |
+| `* /v1/*`        | yes  | Proxied to a chosen backend (streaming supported) |
+| `GET /healthz`   | no   | Liveness probe                                    |
+| `GET /readyz`    | no   | Readiness probe (any healthy backend)             |
+| `GET /metrics`   | no   | Prometheus metrics scrape endpoint                |
+| `GET /`          | no   | Service info                                      |
 
 ## Prometheus metrics
 
 `GET /metrics` exposes Prometheus text format and does not require authentication.
 Scrape it from Prometheus, Grafana Agent, or any compatible collector.
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `llama_scale_active_connections{backend}` | Gauge | In-flight proxied requests per backend |
-| `llama_scale_requests_total{outcome}` | Counter | Requests by outcome: `success` (2xx), `auth_failure` (401), `server_error` (5xx) |
-| `llama_scale_request_duration_seconds` | Histogram | End-to-end HTTP request duration |
-| `llama_scale_time_to_first_byte_seconds` | Histogram | Time from upstream request start until the first response byte |
-| `llama_scale_tokens_generated_total` | Counter | Completion tokens observed in proxied LLM responses |
-| `llama_scale_tokens_per_second_avg` | Gauge | Exponential moving average of completion tokens per second |
+| Metric                                    | Type      | Description                                                                      |
+|-------------------------------------------|-----------|----------------------------------------------------------------------------------|
+| `llama_scale_active_connections{backend}` | Gauge     | In-flight proxied requests per backend                                           |
+| `llama_scale_requests_total{outcome}`     | Counter   | Requests by outcome: `success` (2xx), `auth_failure` (401), `server_error` (5xx) |
+| `llama_scale_request_duration_seconds`    | Histogram | End-to-end HTTP request duration                                                 |
+| `llama_scale_time_to_first_byte_seconds`  | Histogram | Time from upstream request start until the first response byte                   |
+| `llama_scale_tokens_generated_total`      | Counter   | Completion tokens observed in proxied LLM responses                              |
+| `llama_scale_tokens_per_second_avg`       | Gauge     | Exponential moving average of completion tokens per second                       |
 
 Token counts prefer `usage.completion_tokens` from upstream JSON/SSE when present;
 otherwise they are estimated from streaming `delta.content` chunks.

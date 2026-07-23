@@ -240,46 +240,10 @@ docker run ... ghcr.io/tokenring-ai/llama-scale:latest \
   --config /etc/llama-scale/config.yaml
 ```
 
-## Kubernetes sketch
+## Kubernetes
 
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: llama-scale
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: llama-scale
-  template:
-    metadata:
-      labels:
-        app: llama-scale
-    spec:
-      containers:
-        - name: llama-scale
-          image: ghcr.io/tokenring-ai/llama-scale:v1.0.4
-          ports:
-            - containerPort: 8080
-          volumeMounts:
-            - name: config
-              mountPath: /etc/llama-scale/config.yaml
-              subPath: config.yaml
-              readOnly: true
-          livenessProbe:
-            httpGet:
-              path: /healthz
-              port: 8080
-          readinessProbe:
-            httpGet:
-              path: /readyz
-              port: 8080
-      volumes:
-        - name: config
-          configMap:
-            name: llama-scale-config
-```
+For a full Deployment, Service, Secrets, Ingress, and session-affinity notes,
+see [Getting started on Kubernetes](getting-started-kubernetes.md).
 
 ## Troubleshooting
 
@@ -296,4 +260,5 @@ spec:
 - Full config reference: [README — Configuration reference](../README.md#configuration-reference)
 - Backend setup: [README — Setting up backends](../README.md#setting-up-backends)
 - Bare-metal Linux packages: [Debian/Ubuntu](getting-started-debian-ubuntu.md) · [Red Hat/Fedora](getting-started-redhat-fedora.md)
+- Orchestration / homelab: [Kubernetes](getting-started-kubernetes.md) · [Proxmox](getting-started-proxmox.md)
 - macOS without Docker: [macOS guide](getting-started-macos.md)
