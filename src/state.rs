@@ -148,6 +148,9 @@ pub struct AppState {
     /// `key -> per-key identity/limits`. Empty means authentication is disabled.
     pub api_keys: Arc<HashMap<String, Arc<ApiKeyInfo>>>,
     pub auth_enabled: bool,
+    /// Bearer token guarding privileged endpoints (e.g. `/metrics`). `None`
+    /// leaves those endpoints open.
+    pub admin_token: Option<String>,
     /// `session_id -> backend index` affinity cache (TTL + capacity bounded).
     pub session_cache: Cache<String, usize>,
     /// Merged, deduplicated model list served by `/v1/models` and `/models`.
@@ -192,6 +195,13 @@ impl AppState {
             );
         }
 
+        let admin_token = cfg.server.admin_token.clone();
+        if admin_token.is_none() {
+            tracing::warn!(
+                "no server.admin_token configured -> /metrics is unauthenticated (open access)"
+            );
+        }
+
         let session_cache = Cache::builder()
             .time_to_live(Duration::from_secs(cfg.session_ttl_secs.max(1)))
             .max_capacity(cfg.session_max_entries.max(1))
@@ -207,6 +217,7 @@ impl AppState {
             backends,
             api_keys: Arc::new(api_keys),
             auth_enabled,
+            admin_token,
             session_cache,
             models_list: ArcSwap::from_pointee(Vec::new()),
             http,
@@ -283,6 +294,8 @@ mod tests {
             server: crate::config::ServerConfig {
                 listen: "127.0.0.1:0".into(),
                 api_keys: Default::default(),
+                tls: None,
+                admin_token: None,
             },
             log: Default::default(),
             models_refresh_interval_secs: 30,

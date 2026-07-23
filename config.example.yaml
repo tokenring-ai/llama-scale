@@ -26,6 +26,18 @@ server:
   #     concurrent_requests: 2 # max in-flight requests for this key; 0/omit = unlimited
   #   sk-bob-key:
   #     id: bob                # no allowed_models/concurrent_requests -> unrestricted
+  #
+  # TLS termination on the listen socket. Omit to serve plain HTTP (e.g. behind
+  # a TLS-terminating reverse proxy or load balancer).
+  # tls:
+  #   cert_path: "/etc/llama-scale/tls/cert.pem"  # PEM cert or full chain
+  #   key_path: "/etc/llama-scale/tls/key.pem"    # PEM private key
+  #
+  # Bearer token guarding privileged endpoints (currently /metrics). Separate
+  # from api_keys: no model allowlists/concurrency caps apply, and it's meant
+  # for scrape/ops tooling, not clients. Leave unset to leave /metrics open
+  # (fine for local development; set this for internet-facing deployments).
+  # admin_token: "${LLAMA_SCALE_ADMIN_TOKEN}"
 
 # Logging (applies to app logs AND HTTP request/access logs).
 #   destination: "console" (stderr, default) or "file"

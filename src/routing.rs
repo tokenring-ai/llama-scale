@@ -110,6 +110,7 @@ mod tests {
             backends,
             api_keys,
             auth_enabled: true,
+            admin_token: None,
             session_cache: Cache::builder().build(),
             models_list: ArcSwap::from_pointee(Vec::new()),
             http,

@@ -64,7 +64,8 @@ pub fn init() -> PrometheusHandle {
     handle
 }
 
-/// `GET /metrics` — Prometheus scrape endpoint (unauthenticated).
+/// `GET /metrics` — Prometheus scrape endpoint. Gated by `server.admin_token`
+/// (see `auth::require_api_key`) when configured.
 pub async fn handle(
     State(state): State<Arc<AppState>>,
     Extension(handle): Extension<PrometheusHandle>,

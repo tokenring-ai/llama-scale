@@ -16,6 +16,7 @@ use axum::{
     routing::get,
     Extension, Router,
 };
+use axum_server::tls_rustls::RustlsConfig;
 use clap::Parser;
 use std::path::PathBuf;
 use tower_http::cors::CorsLayer;
@@ -82,6 +83,7 @@ async fn run(args: Args, log_override: Option<config::LogDestination>) -> Result
         "starting llama-scale"
     );
 
+    let tls = cfg.server.tls.clone();
     let metrics_handle = metrics::init();
     let state = state::AppState::build(cfg)?;
 
@@ -124,9 +126,28 @@ async fn run(args: Args, log_override: Option<config::LogDestination>) -> Result
         .layer(Extension(metrics_handle))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind(listen).await?;
-    tracing::info!("listening on {listen}");
-    axum::serve(listener, app).await?;
+    match tls {
+        Some(tls) => {
+            let tls_config = RustlsConfig::from_pem_file(&tls.cert_path, &tls.key_path)
+                .await
+                .with_context(|| {
+                    format!(
+                        "loading TLS cert '{}' / key '{}'",
+                        tls.cert_path.display(),
+                        tls.key_path.display()
+                    )
+                })?;
+            tracing::info!("listening on {listen} (tls)");
+            axum_server::bind_rustls(listen, tls_config)
+                .serve(app.into_make_service())
+                .await?;
+        }
+        None => {
+            let listener = tokio::net::TcpListener::bind(listen).await?;
+            tracing::info!("listening on {listen}");
+            axum::serve(listener, app).await?;
+        }
+    }
     Ok(())
 }
 

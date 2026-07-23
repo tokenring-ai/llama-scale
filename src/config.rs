@@ -51,6 +51,25 @@ pub struct ServerConfig {
     /// Leave empty to disable authentication (open access).
     #[serde(default)]
     pub api_keys: RawApiKeys,
+    /// TLS termination for the listen socket. Omit to serve plain HTTP (e.g.
+    /// behind a TLS-terminating reverse proxy).
+    #[serde(default)]
+    pub tls: Option<TlsConfig>,
+    /// Bearer token guarding privileged endpoints (currently `/metrics`).
+    /// Distinct from `api_keys`: it is not subject to model allowlists or
+    /// concurrency caps and is meant for scrape/ops tooling, not clients.
+    /// Leave unset to leave privileged endpoints open (not recommended for
+    /// internet-facing deployments).
+    #[serde(default)]
+    pub admin_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct TlsConfig {
+    /// PEM-encoded certificate (or full chain) file path.
+    pub cert_path: PathBuf,
+    /// PEM-encoded private key file path.
+    pub key_path: PathBuf,
 }
 
 /// Raw (as-parsed) shape of `server.api_keys`. Use [`ServerConfig::api_key_map`]
@@ -246,6 +265,27 @@ impl Config {
                     self.server.listen
                 )
             })?;
+
+        if let Some(tls) = &self.server.tls {
+            if !tls.cert_path.is_file() {
+                return Err(anyhow!(
+                    "server.tls.cert_path '{}' does not exist or is not a file",
+                    tls.cert_path.display()
+                ));
+            }
+            if !tls.key_path.is_file() {
+                return Err(anyhow!(
+                    "server.tls.key_path '{}' does not exist or is not a file",
+                    tls.key_path.display()
+                ));
+            }
+        }
+
+        if let Some(token) = &self.server.admin_token {
+            if token.trim().is_empty() {
+                return Err(anyhow!("server.admin_token must not be empty"));
+            }
+        }
 
         if self.log.destination == LogDestination::File
             && self
@@ -544,5 +584,97 @@ backends:
         expand_env_in_value(&mut value).unwrap();
         let cfg: Config = serde_yaml::from_value(value).unwrap();
         assert_eq!(cfg.backends[0].api_key, "supersecret");
+    }
+
+    #[test]
+    fn tls_requires_existing_cert_and_key_files() {
+        let dir = std::env::temp_dir().join(format!("mr-tls-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cert = dir.join("cert.pem");
+        let key = dir.join("key.pem");
+        std::fs::write(&cert, "cert").unwrap();
+        std::fs::write(&key, "key").unwrap();
+
+        let yaml = format!(
+            r#"
+server:
+  listen: 127.0.0.1:8080
+  tls:
+    cert_path: {}
+    key_path: {}
+backends:
+  - name: a
+    url: https://api.openai.com/v1
+"#,
+            cert.display(),
+            key.display()
+        );
+        let cfg: Config = serde_yaml::from_str(&yaml).unwrap();
+        cfg.validate().unwrap();
+
+        let missing_yaml = format!(
+            r#"
+server:
+  listen: 127.0.0.1:8080
+  tls:
+    cert_path: {}
+    key_path: {}/does-not-exist.pem
+backends:
+  - name: a
+    url: https://api.openai.com/v1
+"#,
+            cert.display(),
+            dir.display()
+        );
+        let cfg: Config = serde_yaml::from_str(&missing_yaml).unwrap();
+        assert!(cfg.validate().is_err());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn admin_token_defaults_to_unset() {
+        let yaml = r#"
+server:
+  listen: 127.0.0.1:8080
+backends:
+  - name: a
+    url: https://api.openai.com/v1
+"#;
+        let cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        cfg.validate().unwrap();
+        assert!(cfg.server.admin_token.is_none());
+    }
+
+    #[test]
+    fn empty_admin_token_is_rejected() {
+        let yaml = r#"
+server:
+  listen: 127.0.0.1:8080
+  admin_token: ""
+backends:
+  - name: a
+    url: https://api.openai.com/v1
+"#;
+        let cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn admin_token_expands_from_env() {
+        std::env::set_var("MR_TEST_ADMIN_TOKEN", "supersecret-admin");
+        let yaml = r#"
+server:
+  listen: 127.0.0.1:8080
+  admin_token: ${MR_TEST_ADMIN_TOKEN}
+backends:
+  - name: a
+    url: https://api.openai.com/v1
+"#;
+        let mut value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        expand_env_in_value(&mut value).unwrap();
+        let cfg: Config = serde_yaml::from_value(value).unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(cfg.server.admin_token.as_deref(), Some("supersecret-admin"));
     }
 }

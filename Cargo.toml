@@ -32,6 +32,7 @@ bytes = "1"
 url = "2"
 metrics = "0.24"
 metrics-exporter-prometheus = "0.17"
+axum-server = { version = "0.8.0", features = ["tls-rustls"] }
 
 [target.'cfg(unix)'.dependencies]
 daemonize = "0.5"
