@@ -2,13 +2,14 @@ name: Build & Release
 
 # Builds release binaries for Linux/macOS/Windows on Intel (x86_64) and Arm
 # (aarch64), Debian/Ubuntu .deb packages (amd64 + arm64), RPM packages
-# (x86_64 + aarch64), an npm package with all six platform binaries, plus
-# multi-arch Docker images (linux/amd64, linux/arm64) pushed to GHCR.
+# (x86_64 + aarch64), an npm package with all six platform binaries, the
+# install.sh bootstrap script, plus multi-arch Docker images (linux/amd64,
+# linux/arm64) pushed to GHCR.
 #
 # Triggers:
 #   - push of a v* tag   -> builds everything, publishes a GitHub Release
-#                           (tarballs + .deb + .rpm), publishes to npm, and pushes
-#                           :<tag> + :latest Docker images.
+#                           (tarballs + .deb + .rpm + install.sh), publishes
+#                           to npm, and pushes :<tag> + :latest Docker images.
 #   - workflow_dispatch  -> builds everything, pushes a :sha-<short> Docker image
 #                           (no release/npm publish). Handy for testing from a branch.
 #
@@ -234,10 +235,32 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7
+
       - name: Download all binary artifacts
         uses: actions/download-artifact@v7
         with:
           path: assets
+
+      # install.sh is published as a fixed asset name so users can always:
+      #   curl -fsSL .../releases/latest/download/install.sh | bash
+      # VERSION_PIN inside the script is bumped with the rest of the project
+      # via .bumpversion.cfg and must match the release tag.
+      - name: Verify install.sh version pin
+        run: |
+          set -euo pipefail
+          pin="$(sed -n 's/^VERSION_PIN="\([^"]*\)"/\1/p' install.sh | head -n1)"
+          tag="${GITHUB_REF_NAME#v}"
+          if [[ -z "${pin}" ]]; then
+            echo "VERSION_PIN not found in install.sh" >&2
+            exit 1
+          fi
+          if [[ "${pin}" != "${tag}" ]]; then
+            echo "install.sh VERSION_PIN=${pin} does not match tag ${tag}" >&2
+            echo "Run bumpversion before tagging so install.sh is updated." >&2
+            exit 1
+          fi
+          echo "install.sh VERSION_PIN=${pin} matches release tag"
 
       - name: Create release
         uses: softprops/action-gh-release@v3
@@ -246,6 +269,7 @@ jobs:
             assets/**/*.tar.gz
             assets/**/*.deb
             assets/**/*.rpm
+            install.sh
           generate_release_notes: true
 
   publish-npm:

@@ -13,7 +13,41 @@ so context stays warm.
 
 ## Quick start
 
-### Option 1: npx (no install)
+Platform-specific walkthroughs (packages, systemd, Docker networking, macOS):
+
+| Platform | Guide |
+|----------|-------|
+| Debian / Ubuntu | [guides/getting-started-debian-ubuntu.md](guides/getting-started-debian-ubuntu.md) |
+| Red Hat / Fedora | [guides/getting-started-redhat-fedora.md](guides/getting-started-redhat-fedora.md) |
+| macOS | [guides/getting-started-macos.md](guides/getting-started-macos.md) |
+| Docker | [guides/getting-started-docker.md](guides/getting-started-docker.md) |
+| MikroTik | [guides/getting-started-mikrotik.md](guides/getting-started-mikrotik.md) |
+
+### Option 1: install script (macOS / Linux)
+
+One-liner that installs a pinned release (uses npm/bun when available, otherwise
+downloads the prebuilt binary into `~/.local/bin`):
+
+```bash
+curl -fsSL https://github.com/tokenring-ai/llama-scale/releases/latest/download/install.sh | bash
+```
+
+Then create a config and run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tokenring-ai/llama-scale/main/config.example.yaml -o config.yaml
+# edit config.yaml — see "Sample configuration" below
+llama-scale --config config.yaml
+```
+
+Override the version pin for testing:
+
+```bash
+curl -fsSL https://github.com/tokenring-ai/llama-scale/releases/latest/download/install.sh \
+  | LLAMA_SCALE_INSTALL_VERSION=1.0.4 bash
+```
+
+### Option 2: npx (no install)
 
 Requires [Node.js](https://nodejs.org/) 18+. Downloads the correct prebuilt binary
 for your platform on first run.
@@ -35,7 +69,7 @@ llama-scale --config config.yaml
 
 The config path can also be set with `MODEL_ROUTER_CONFIG`.
 
-### Option 2: Prebuilt binary (GitHub Releases)
+### Option 3: Prebuilt binary (GitHub Releases)
 
 Download a release tarball for your platform from the
 [GitHub Releases](https://github.com/tokenring-ai/llama-scale/releases) page.
@@ -73,7 +107,7 @@ tar xzf llama-scale-v1.0.2-aarch64-apple-darwin.tar.gz
 Move the binary onto your `PATH` (e.g. `sudo mv llama-scale /usr/local/bin/`) if you
 want it available system-wide.
 
-### Option 3: Install from source with Cargo
+### Option 4: Install from source with Cargo
 
 Requires the [Rust toolchain](https://rust-lang.org/tools/install) (stable).
 
@@ -112,7 +146,7 @@ cp config.example.yaml config.yaml
 cargo run --release -- --config config.yaml
 ```
 
-### Option 4: Docker
+### Option 5: Docker
 
 Prebuilt multi-arch images are published to GitHub Container Registry on every
 release:
@@ -132,7 +166,7 @@ Backends running on the Docker host (Ollama, LM Studio, etc.) are usually reache
 at `http://host.docker.internal:<port>/v1` on macOS and Windows. On Linux, add
 `--add-host=host.docker.internal:host-gateway` or use `network_mode: host`.
 
-### Option 5: .deb or .rpm (Linux packages)
+### Option 6: .deb or .rpm (Linux packages)
 
 Download the package for your architecture from the
 [GitHub Releases](https://github.com/tokenring-ai/llama-scale/releases) page:
@@ -260,6 +294,8 @@ A fully commented reference copy lives in [`config.example.yaml`](config.example
 |-------|-------------|
 | `listen` | Socket address to bind, e.g. `"0.0.0.0:8080"` or `"127.0.0.1:11435"`. |
 | `api_keys` | Bearer tokens clients must send as `Authorization: Bearer <key>`. Leave empty to disable authentication (open access). Accepts either a flat list of keys, or a map for multi-user setups — see below. |
+| `tls` | Optional. Terminates TLS directly on the listen socket — see below. Omit to serve plain HTTP (e.g. behind a TLS-terminating reverse proxy). |
+| `admin_token` | Optional. Bearer token guarding privileged endpoints (`/metrics`) — see below. Omit to leave them open. |
 
 #### `api_keys`: single vs. multi-user
 
@@ -292,6 +328,47 @@ A request for a model outside `allowed_models` gets `403 model_not_allowed`;
 one that would exceed `concurrent_requests` gets `429 rate_limit_error`. Each
 key's `id` (never the raw key) is recorded in the access log and, if
 restricted, filters what that key sees from `/v1/models`.
+
+#### `tls`: terminating HTTPS directly
+
+By default llama-scale serves plain HTTP. To terminate TLS on the listen
+socket itself (instead of putting a reverse proxy in front), set `server.tls`
+to a PEM certificate (or full chain) and private key:
+
+```yaml
+server:
+  listen: "0.0.0.0:8443"
+  tls:
+    cert_path: "/etc/llama-scale/tls/cert.pem"
+    key_path: "/etc/llama-scale/tls/key.pem"
+```
+
+Both paths are validated at startup — llama-scale refuses to start if either
+file is missing. Clients then connect with `https://`. `listen` is unaffected
+by `tls`; pick whatever port you want (`8443` above is just a convention).
+
+#### `admin_token`: protecting `/metrics`
+
+`/metrics` (the Prometheus scrape endpoint) is unauthenticated by default,
+which leaks active backends, connection counts, and traffic rates to anyone
+who can reach the port. Set `server.admin_token` to require a bearer token on
+it:
+
+```yaml
+server:
+  admin_token: "${LLAMA_SCALE_ADMIN_TOKEN}"
+```
+
+```
+curl -H "Authorization: Bearer $LLAMA_SCALE_ADMIN_TOKEN" http://localhost:8080/metrics
+```
+
+`admin_token` is independent of `api_keys` — it is not subject to model
+allowlists or concurrency caps, and `api_keys` cannot be used to authenticate
+to `/metrics` (and vice versa). Like other secrets in this config, reference
+it via `${ENV_VAR}` rather than committing it in plaintext. `/healthz` and
+`/readyz` remain unauthenticated regardless, since orchestrators (k8s,
+Docker) need to probe them without credentials.
 
 ### `log`
 
@@ -580,7 +657,7 @@ rate(llama_scale_tokens_generated_total[5m])
 ## Development
 
 Contributing or hacking on the router? Clone the repo (see
-[Option 3: Install from source with Cargo](#option-3-install-from-source-with-cargo))
+[Option 4: Install from source with Cargo](#option-4-install-from-source-with-cargo))
 and use:
 
 ```bash

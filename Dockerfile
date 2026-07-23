@@ -40,18 +40,15 @@ cargo build --release --locked --target "${RUST_TARGET}"
 cp "target/${RUST_TARGET}/release/llama-scale" /llama-scale
 EOF
 
+
 # ---- Runtime stage ----
-# Runs under the target platform. The only RUN here is the lightweight install
-# of ca-certificates, so QEMU emulation (for arm64) is negligible.
-FROM debian:bookworm-slim AS runtime
-RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates \
- && rm -rf /var/lib/apt/lists/* \
- && useradd --system --uid 1001 --create-home llama
+# gcr.io/distroless/cc-debian12 provides glibc, libgcc, libm, and ca-certificates.
+FROM gcr.io/distroless/cc-debian12 AS runtime
 WORKDIR /etc/llama-scale
 COPY config.example.yaml /etc/llama-scale/config.example.yaml
 COPY --from=builder /llama-scale /usr/local/bin/llama-scale
-USER llama
+# Distroless CC image includes a non-root 'nonroot' user (UID 65532) by default
+USER nonroot:nonroot
 EXPOSE 8080
-ENTRYPOINT ["llama-scale"]
+ENTRYPOINT ["/usr/local/bin/llama-scale"]
 CMD ["--config", "/etc/llama-scale/config.yaml"]
