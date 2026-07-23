@@ -17,7 +17,7 @@
 set -euo pipefail
 
 # Pinned release version (managed by bumpversion)
-VERSION_PIN="1.0.5"
+VERSION_PIN="1.0.6"
 
 REPO="${LLAMA_SCALE_INSTALL_REPO:-tokenring-ai/llama-scale}"
 VERSION="${LLAMA_SCALE_INSTALL_VERSION:-$VERSION_PIN}"

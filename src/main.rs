@@ -42,6 +42,18 @@ struct Args {
     /// Run in the background as a daemon (Unix only).
     #[arg(short = 'D', long)]
     daemon: bool,
+
+    /// Enable the Prometheus metrics scrape endpoint at GET /metrics
+    /// (disabled by default).
+    #[arg(
+        long,
+        default_value_t = false,
+        default_missing_value = "true",
+        num_args = 0..=1,
+        action = clap::ArgAction::Set,
+        env = "MODEL_ROUTER_METRICS"
+    )]
+    metrics: bool,
 }
 
 const MAX_REQUEST_BODY: usize = 100 * 1024 * 1024;
@@ -84,7 +96,12 @@ async fn run(args: Args, log_override: Option<config::LogDestination>) -> Result
     );
 
     let tls = cfg.server.tls.clone();
-    let metrics_handle = metrics::init();
+    let metrics_enabled = args.metrics;
+    let metrics_handle = if metrics_enabled {
+        Some(metrics::init())
+    } else {
+        None
+    };
     let state = state::AppState::build(cfg)?;
 
     // Initial control-plane pass before accepting traffic: backends start
@@ -98,6 +115,7 @@ async fn run(args: Args, log_override: Option<config::LogDestination>) -> Result
         healthy_backends = healthy,
         total_backends = state.backends.len(),
         ready = state.is_ready(),
+        metrics = metrics_enabled,
         "initial control-plane pass complete"
     );
 
@@ -111,20 +129,31 @@ async fn run(args: Args, log_override: Option<config::LogDestination>) -> Result
         health::run_health_checks(st).await;
     });
 
-    let app = Router::new()
+    let mut app = Router::new()
         .route("/", get(proxy::root))
         .route("/healthz", get(proxy::healthz))
         .route("/readyz", get(proxy::readyz))
-        .route("/metrics", get(metrics::handle))
         .route("/v1/models", get(models::get_models))
-        .route("/models", get(models::get_models))
+        .route("/models", get(models::get_models));
+
+    // Routes must be registered before layers so middleware (auth, etc.) applies.
+    if metrics_enabled {
+        app = app.route("/metrics", get(metrics::handle));
+    }
+
+    let app = app
         .fallback(proxy::proxy)
         .layer(from_fn_with_state(state.clone(), auth::require_api_key))
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY))
         .layer(from_fn(access_log::access_log))
-        .layer(CorsLayer::permissive())
-        .layer(Extension(metrics_handle))
-        .with_state(state);
+        .layer(CorsLayer::permissive());
+
+    let app = if let Some(handle) = metrics_handle {
+        app.layer(Extension(handle))
+    } else {
+        app
+    }
+    .with_state(state);
 
     match tls {
         Some(tls) => {

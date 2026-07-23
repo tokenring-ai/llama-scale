@@ -344,4 +344,4 @@ jobs:
           "
 
           cd packaging/npm
-          npm stage publish --provenance --access public
+          npm publish --provenance --access public

@@ -228,9 +228,10 @@ curl http://localhost:8080/v1/models \
   -H "Authorization: Bearer sk-router-dev-key-change-me"
 ```
 
-Scrape Prometheus metrics (no auth required):
+Scrape Prometheus metrics (requires `--metrics`; no auth unless `admin_token` is set):
 
 ```bash
+llama-scale --config config.yaml --metrics
 curl http://localhost:8080/metrics
 ```
 
@@ -351,10 +352,11 @@ by `tls`; pick whatever port you want (`8443` above is just a convention).
 
 #### `admin_token`: protecting `/metrics`
 
-`/metrics` (the Prometheus scrape endpoint) is unauthenticated by default,
-which leaks active backends, connection counts, and traffic rates to anyone
-who can reach the port. Set `server.admin_token` to require a bearer token on
-it:
+The Prometheus scrape endpoint is **off by default**. Enable it with the
+`--metrics` flag (or `MODEL_ROUTER_METRICS=true`). When enabled, `/metrics` is
+unauthenticated unless you set `server.admin_token`, which leaks active backends,
+connection counts, and traffic rates to anyone who can reach the port. Set
+`server.admin_token` to require a bearer token on it:
 
 ```yaml
 server:
@@ -611,13 +613,15 @@ to wait until upstreams are verified.
 | `* /v1/*`        | yes  | Proxied to a chosen backend (streaming supported) |
 | `GET /healthz`   | no   | Liveness probe                                    |
 | `GET /readyz`    | no   | Readiness probe (any healthy backend)             |
-| `GET /metrics`   | no   | Prometheus metrics scrape endpoint                |
-| `GET /`          | no   | Service info                                      |
+| `GET /metrics`   | optional | Prometheus metrics (disabled unless `--metrics`) |
+| `GET /`          | no       | Service info                                      |
 
 ## Prometheus metrics
 
-`GET /metrics` exposes Prometheus text format and does not require authentication.
-Scrape it from Prometheus, Grafana Agent, or any compatible collector.
+`GET /metrics` is disabled by default. Pass `--metrics` (or set
+`MODEL_ROUTER_METRICS=true`) to expose Prometheus text format. Authentication is
+optional via `server.admin_token`. Scrape it from Prometheus, Grafana Agent, or
+any compatible collector.
 
 | Metric                                    | Type      | Description                                                                      |
 |-------------------------------------------|-----------|----------------------------------------------------------------------------------|
@@ -651,7 +655,7 @@ rate(llama_scale_tokens_generated_total[5m])
 - Per-backend model aliases
 - Periodic health checking with automatic failover
 - Startup health + models pass before listen; `/healthz` and `/readyz`
-- Prometheus metrics at `/metrics`
+- Optional Prometheus metrics at `/metrics` (`--metrics`, off by default)
 - Bearer API key authentication
 - `${ENV_VAR}` secret expansion in config
 - Structured HTTP access logging to console or file
