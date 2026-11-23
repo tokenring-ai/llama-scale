@@ -62,9 +62,9 @@ jobs:
             linker: ""
             strip_cmd: strip -x
             binary: llama-scale
-          # macOS Apple Silicon (Arm)
+          # macOS Apple Silicon (Arm). macos-14 was retired 2026-11-02.
           - target: aarch64-apple-darwin
-            os: macos-14
+            os: macos-15
             apt: ""
             linker: ""
             strip_cmd: strip -x
