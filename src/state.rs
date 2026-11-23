@@ -135,11 +135,24 @@ impl Backend {
     }
 }
 
+/// Context fields taken from one upstream `/models` entry.
+///
+/// `len` is the served window. `n_ctx_train` is the trained window when the
+/// backend reported it separately, and is never copied into `len`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelContext {
+    pub len: Option<u64>,
+    pub n_ctx_train: Option<u64>,
+    pub n_vocab: Option<u64>,
+}
+
 /// A single entry in the merged `/models` listing.
 #[derive(Debug, Clone)]
 pub struct ModelInfo {
     pub id: String,
     pub owned_by: String,
+    /// Normalized context. `None` when the upstream entry reported none.
+    pub context: Option<ModelContext>,
 }
 
 /// Shared application state.
