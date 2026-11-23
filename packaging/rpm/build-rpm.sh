@@ -25,6 +25,7 @@ install -m 0755 "${BINARY}" "${STAGING}/usr/bin/llama-scale"
 install -m 0644 "${DEBIAN_DIR}/llama-scale.service" "${STAGING}/usr/lib/systemd/system/"
 install -m 0644 "${DEBIAN_DIR}/config.yaml.default" "${STAGING}/etc/llama-scale/"
 
+# Source0 for the spec. Top-level directory name is "staging", which %autosetup -n staging enters.
 tar czf "${TOPDIR}/SOURCES/llama-scale-${VERSION}.tar.gz" -C "${TOPDIR}/BUILD" staging
 cp "${SCRIPT_DIR}/llama-scale.spec" "${TOPDIR}/SPECS/"
 

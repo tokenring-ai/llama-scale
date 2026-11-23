@@ -8,13 +8,17 @@ License:        MIT
 URL:            https://github.com/tokenring-ai/llama-scale
 Requires:       ca-certificates
 AutoReqProv:    no
+Source0:        llama-scale-%{version}.tar.gz
 
 %description
 A Rust-based OpenAI-compatible LLM router with session affinity
 and least-connections load balancing.
 
+# Unpack Source0 (a staging/ tree produced by build-rpm.sh). RPM 6 runs the
+# build in BUILD/<name>-<version>-build, so a pre-filled BUILD/staging is not
+# the working directory. -T used to skip the unpack and depend on that.
 %prep
-%autosetup -n staging -c -T -D
+%autosetup -n staging
 
 %install
 mkdir -p %{buildroot}/usr/bin
